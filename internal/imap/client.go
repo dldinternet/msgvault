@@ -784,23 +784,13 @@ func (c *Client) DeleteMessage(ctx context.Context, messageID string) error {
 	})
 }
 
-// BatchDeleteMessages permanently deletes multiple messages.
-// Returns an error if any deletion fails so the caller can fall
-// back to per-message deletes.
-func (c *Client) BatchDeleteMessages(ctx context.Context, messageIDs []string) error {
-	var firstErr error
-	for _, id := range messageIDs {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err := c.DeleteMessage(ctx, id); err != nil {
-			c.logger.Warn("failed to delete message", "id", id, "error", err)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("delete %s: %w", id, err)
-			}
-		}
-	}
-	return firstErr
+// BatchDeleteMessages always returns an error to signal that IMAP
+// does not support atomic batch deletion. The deletion executor
+// falls back to per-message DeleteMessage calls, which avoids the
+// double-retry problem that would occur if we deleted some messages
+// here and then the executor retried the entire batch.
+func (c *Client) BatchDeleteMessages(_ context.Context, _ []string) error {
+	return fmt.Errorf("IMAP does not support batch delete")
 }
 
 // Close logs out and disconnects from the IMAP server.

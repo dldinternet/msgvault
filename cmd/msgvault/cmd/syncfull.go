@@ -84,16 +84,23 @@ Examples:
 		// Determine which sources to sync
 		var sources []*store.Source
 		if len(args) == 1 {
-			// Explicit identifier - look up by identifier
-			src, err := s.GetSourceByIdentifier(args[0])
+			// Look up all sources matching the identifier and
+			// keep only syncable types (gmail, imap). Non-syncable
+			// sources like mbox/apple-mail imports share the same
+			// identifier namespace but cannot be synced.
+			allMatches, err := s.GetSourcesByIdentifier(args[0])
 			if err != nil {
 				return fmt.Errorf("look up source: %w", err)
 			}
-			if src == nil {
-				// Not in DB yet - assume Gmail (legacy behaviour)
-				src = &store.Source{SourceType: "gmail", Identifier: args[0]}
+			for _, src := range allMatches {
+				if src.SourceType == "gmail" || src.SourceType == "imap" {
+					sources = append(sources, src)
+				}
 			}
-			sources = []*store.Source{src}
+			if len(sources) == 0 {
+				// Not in DB yet - assume Gmail (legacy behaviour)
+				sources = []*store.Source{{SourceType: "gmail", Identifier: args[0]}}
+			}
 		} else {
 			// Sync all configured sources
 			allSources, err := s.ListSources("")
