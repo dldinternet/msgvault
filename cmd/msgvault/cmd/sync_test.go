@@ -65,7 +65,15 @@ func TestSyncCmd_DuplicateIdentifierRoutesCorrectly(t *testing.T) {
 		t.Fatalf("init schema: %v", err)
 	}
 
-	// Create both gmail and imap sources for the same identifier.
+	// Insert IMAP *before* Gmail so that an ambiguous single-row
+	// lookup (the old GetSourceByIdentifier bug) would return the
+	// IMAP row, not the Gmail one. This ensures the test only
+	// passes when the resolved Gmail source is actually used.
+	_, err = s.GetOrCreateSource("imap", "shared@example.com")
+	if err != nil {
+		t.Fatalf("create imap source: %v", err)
+	}
+
 	gmailSrc, err := s.GetOrCreateSource(
 		"gmail", "shared@example.com",
 	)
@@ -76,11 +84,6 @@ func TestSyncCmd_DuplicateIdentifierRoutesCorrectly(t *testing.T) {
 	// the "no history ID" guard and into getTokenSourceWithReauth.
 	if err := s.UpdateSourceSyncCursor(gmailSrc.ID, "99999"); err != nil {
 		t.Fatalf("set sync cursor: %v", err)
-	}
-
-	_, err = s.GetOrCreateSource("imap", "shared@example.com")
-	if err != nil {
-		t.Fatalf("create imap source: %v", err)
 	}
 	_ = s.Close()
 

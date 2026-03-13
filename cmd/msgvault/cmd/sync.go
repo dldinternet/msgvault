@@ -124,9 +124,13 @@ Examples:
 			for _, src := range allSources {
 				switch src.SourceType {
 				case "gmail":
+					if cfg.OAuth.ClientSecrets == "" {
+						fmt.Printf("Skipping %s (OAuth not configured)\n", src.Identifier)
+						continue
+					}
 					mgr, mgrErr := getOAuthMgr()
 					if mgrErr != nil {
-						fmt.Printf("Skipping %s (OAuth not configured)\n", src.Identifier)
+						fmt.Printf("Skipping %s (%v)\n", src.Identifier, mgrErr)
 						continue
 					}
 					if !src.SyncCursor.Valid || src.SyncCursor.String == "" {

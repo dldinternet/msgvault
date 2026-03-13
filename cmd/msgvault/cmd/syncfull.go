@@ -117,10 +117,13 @@ Examples:
 			for _, src := range allSources {
 				switch src.SourceType {
 				case "gmail":
-					mgr, err := getOAuthMgr()
-					if err != nil {
+					if cfg.OAuth.ClientSecrets == "" {
 						fmt.Printf("Skipping %s (OAuth not configured)\n", src.Identifier)
 						continue
+					}
+					mgr, err := getOAuthMgr()
+					if err != nil {
+						return err
 					}
 					if !mgr.HasToken(src.Identifier) {
 						fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
