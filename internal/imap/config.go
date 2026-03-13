@@ -31,10 +31,14 @@ func (c *Config) Addr() string {
 }
 
 // Identifier returns a canonical string like "imaps://user@host:port".
+// The scheme encodes the transport mode: imaps (TLS), imap+starttls
+// (STARTTLS), or imap (plaintext).
 func (c *Config) Identifier() string {
 	scheme := "imap"
 	if c.TLS {
 		scheme = "imaps"
+	} else if c.STARTTLS {
+		scheme = "imap+starttls"
 	}
 	port := c.Port
 	if port == 0 {
@@ -76,10 +80,12 @@ func ParseIdentifier(identifier string) (*Config, error) {
 	switch u.Scheme {
 	case "imaps":
 		cfg.TLS = true
+	case "imap+starttls":
+		cfg.STARTTLS = true
 	case "imap":
-		cfg.TLS = false
+		// plaintext
 	default:
-		return nil, fmt.Errorf("unsupported scheme %q (expected imap or imaps)", u.Scheme)
+		return nil, fmt.Errorf("unsupported scheme %q (expected imap, imaps, or imap+starttls)", u.Scheme)
 	}
 
 	cfg.Host = u.Hostname()

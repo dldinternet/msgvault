@@ -29,6 +29,10 @@ Use --no-tls for a plain unencrypted connection (not recommended).
 
 You will be prompted to enter your password interactively.
 
+Security note: Your password is stored on disk with restricted file
+permissions (0600). For stronger security, use an app-specific password
+instead of your primary account password.
+
 Examples:
   msgvault add-imap --host imap.example.com --username user@example.com
   msgvault add-imap --host mail.example.com --port 993 --username user@example.com
@@ -40,6 +44,9 @@ Examples:
 		}
 		if imapUsername == "" {
 			return fmt.Errorf("--username is required")
+		}
+		if imapNoTLS && imapSTARTTLS {
+			return fmt.Errorf("--no-tls and --starttls are mutually exclusive")
 		}
 
 		// Build IMAP config
@@ -115,6 +122,7 @@ Examples:
 
 		fmt.Printf("\nIMAP account added successfully!\n")
 		fmt.Printf("  Identifier: %s\n", identifier)
+		fmt.Printf("  Note: Password stored on disk at %s\n", imapclient.CredentialsPath(cfg.TokensDir(), identifier))
 		fmt.Println()
 		fmt.Println("You can now run:")
 		fmt.Printf("  msgvault sync-full %s\n", identifier)

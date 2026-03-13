@@ -42,8 +42,10 @@ type Client struct {
 	mailboxCache     []string             // cached list of selectable mailboxes
 	messageListCache []gmailapi.MessageID // full message ID list, built once per session
 	trashMailbox     string               // cached trash mailbox name
+	junkMailbox      string               // cached junk/spam mailbox name
 	allMailFolder    string               // mailbox with \All attribute (empty if not detected)
 	msgIDToLabels    map[string][]string  // RFC822 Message-ID → mailbox memberships
+	seenRFC822IDs    map[string]bool      // dedup across All Mail + Trash/Spam
 }
 
 // NewClient creates a new IMAP client.
@@ -104,8 +106,11 @@ func (c *Client) reconnect(ctx context.Context) error {
 	c.selectedMailbox = ""
 	c.mailboxCache = nil
 	c.messageListCache = nil
+	c.trashMailbox = ""
+	c.junkMailbox = ""
 	c.allMailFolder = ""
 	c.msgIDToLabels = nil
+	c.seenRFC822IDs = nil
 	c.logger.Debug("reconnecting to IMAP server", "addr", c.config.Addr())
 	return c.connect(ctx)
 }
@@ -167,6 +172,27 @@ func (c *Client) listMailboxesLocked() ([]string, error) {
 		}
 		if c.allMailFolder == "" && hasAttr(item.Attrs, imap.MailboxAttrAll) {
 			c.allMailFolder = item.Mailbox
+		}
+		if c.junkMailbox == "" && hasAttr(item.Attrs, imap.MailboxAttrJunk) {
+			c.junkMailbox = item.Mailbox
+		}
+	}
+
+	// Fallback: look for common junk/spam folder names
+	if c.junkMailbox == "" {
+		for _, candidate := range []string{
+			"Spam", "[Gmail]/Spam",
+			"Junk", "Junk Email", "Junk E-mail",
+		} {
+			for _, mb := range names {
+				if strings.EqualFold(mb, candidate) {
+					c.junkMailbox = mb
+					break
+				}
+			}
+			if c.junkMailbox != "" {
+				break
+			}
 		}
 	}
 
@@ -380,9 +406,23 @@ func (c *Client) buildMessageListCache(ctx context.Context) error {
 	// Determine which mailboxes to list for canonical message IDs.
 	listMailboxes := allMailboxes
 	if c.allMailFolder != "" {
+		// All Mail contains every message except Trash and Spam on
+		// Gmail IMAP. Include those mailboxes to avoid missing
+		// messages that are only in Trash or Spam.
 		listMailboxes = []string{c.allMailFolder}
+		if c.trashMailbox != "" {
+			listMailboxes = append(listMailboxes, c.trashMailbox)
+		}
+		if c.junkMailbox != "" {
+			listMailboxes = append(listMailboxes, c.junkMailbox)
+		}
+		// Track Message-IDs to dedup on non-Gmail servers where
+		// All Mail may overlap with Trash/Spam.
+		c.seenRFC822IDs = make(map[string]bool)
 		c.logger.Info("detected All Mail folder via \\All attribute",
 			"folder", c.allMailFolder,
+			"trash", c.trashMailbox,
+			"junk", c.junkMailbox,
 			"total_mailboxes", len(allMailboxes))
 
 		if err := c.buildLabelMap(ctx, allMailboxes); err != nil {
@@ -694,6 +734,19 @@ func (c *Client) GetMessagesRawBatch(ctx context.Context, messageIDs []string) (
 				if len(rawMIME) == 0 {
 					continue
 				}
+
+				// Dedup by RFC822 Message-ID when listing
+				// All Mail alongside Trash/Spam. On Gmail these
+				// are disjoint, but non-Gmail servers may overlap.
+				if c.seenRFC822IDs != nil &&
+					msgBuf.Envelope != nil &&
+					msgBuf.Envelope.MessageID != "" {
+					if c.seenRFC822IDs[msgBuf.Envelope.MessageID] {
+						continue
+					}
+					c.seenRFC822IDs[msgBuf.Envelope.MessageID] = true
+				}
+
 				msgID := compositeID(mailbox, msgBuf.UID)
 				labels := []string{mailbox}
 
