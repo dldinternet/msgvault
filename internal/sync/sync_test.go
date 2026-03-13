@@ -1552,6 +1552,120 @@ func TestIncrementalSyncMixedOperations(t *testing.T) {
 	assertMessageCount(t, env.Store, 3) // 2 original (1 deleted but still counted) + 1 new
 }
 
+// TestDeriveThreadKey verifies the MIME-based thread key derivation used for
+// IMAP sources that lack server-side threading.
+func TestDeriveThreadKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		msg       *mime.Message
+		wantKey   string
+		wantEmpty bool
+	}{
+		{
+			name:    "References uses first entry (thread root)",
+			msg:     &mime.Message{References: []string{"root@ex", "mid@ex"}, InReplyTo: "<mid@ex>", MessageID: "<self@ex>"},
+			wantKey: "root@ex",
+		},
+		{
+			name:    "InReplyTo fallback when no References",
+			msg:     &mime.Message{InReplyTo: "<parent@ex>", MessageID: "<self@ex>"},
+			wantKey: "parent@ex",
+		},
+		{
+			name:    "MessageID fallback for standalone",
+			msg:     &mime.Message{MessageID: "<self@ex>"},
+			wantKey: "self@ex",
+		},
+		{
+			name:      "Empty when no threading info",
+			msg:       &mime.Message{},
+			wantEmpty: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveThreadKey(tt.msg)
+			if tt.wantEmpty {
+				if got != "" {
+					t.Errorf("expected empty, got %q", got)
+				}
+			} else if got != tt.wantKey {
+				t.Errorf("got %q, want %q", got, tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestIMAPThreading verifies that IMAP messages sharing an email thread
+// (via References/In-Reply-To headers) are grouped into the same conversation.
+func TestIMAPThreading(t *testing.T) {
+	env := newTestEnv(t)
+	env.SetOptions(t, func(o *Options) {
+		o.SourceType = "imap"
+	})
+
+	// Build three messages in a thread:
+	// msg-root -> msg-reply -> msg-reply2
+	rootMIME := testemail.NewMessage().
+		Subject("Thread root").
+		Header("Message-ID", "<root@example.com>").
+		Body("Root message.").
+		Bytes()
+
+	replyMIME := testemail.NewMessage().
+		Subject("Re: Thread root").
+		Header("Message-ID", "<reply@example.com>").
+		Header("In-Reply-To", "<root@example.com>").
+		Header("References", "<root@example.com>").
+		Body("Reply message.").
+		Bytes()
+
+	reply2MIME := testemail.NewMessage().
+		Subject("Re: Thread root").
+		Header("Message-ID", "<reply2@example.com>").
+		Header("In-Reply-To", "<reply@example.com>").
+		Header("References", "<root@example.com> <reply@example.com>").
+		Body("Second reply.").
+		Bytes()
+
+	// Standalone message (no threading headers except Message-ID)
+	standaloneMIME := testemail.NewMessage().
+		Subject("Unrelated").
+		Header("Message-ID", "<standalone@example.com>").
+		Body("Standalone message.").
+		Bytes()
+
+	env.Mock.Profile.MessagesTotal = 4
+	env.Mock.Profile.HistoryID = 100
+	env.Mock.AddMessage("INBOX|1", rootMIME, []string{"INBOX"})
+	env.Mock.AddMessage("INBOX|2", replyMIME, []string{"INBOX"})
+	env.Mock.AddMessage("INBOX|3", reply2MIME, []string{"INBOX"})
+	env.Mock.AddMessage("INBOX|4", standaloneMIME, []string{"INBOX"})
+
+	summary := runFullSync(t, env)
+	assertSummary(t, summary, WantSummary{Added: intPtr(4)})
+
+	// All three thread messages should share the same conversation
+	// (thread key = References[0] = root@example.com, brackets stripped)
+	assertThreadSourceID(t, env.Store, "INBOX|1", "root@example.com")
+	assertThreadSourceID(t, env.Store, "INBOX|2", "root@example.com")
+	assertThreadSourceID(t, env.Store, "INBOX|3", "root@example.com")
+
+	// Standalone should use its own Message-ID (brackets stripped)
+	assertThreadSourceID(t, env.Store, "INBOX|4", "standalone@example.com")
+
+	// Verify conversation grouping: thread msgs share 1 conversation,
+	// standalone gets its own.
+	var convCount int
+	err := env.Store.DB().QueryRow(`SELECT COUNT(DISTINCT conversation_id) FROM messages`).Scan(&convCount)
+	if err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if convCount != 2 {
+		t.Errorf("expected 2 conversations (1 thread + 1 standalone), got %d", convCount)
+	}
+}
+
 // TestIncrementalSyncLabelRemovedWithMissingRaw verifies that removing a label
 // from a message whose raw MIME data is missing still succeeds. The label-removal
 // path operates on the message_labels table directly and never touches raw data.

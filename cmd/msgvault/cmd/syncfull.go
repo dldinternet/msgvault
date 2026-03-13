@@ -253,6 +253,15 @@ func runFullSync(ctx context.Context, s *store.Store, oauthMgr *oauth.Manager, s
 	opts.Limit = syncLimit
 	opts.AttachmentsDir = cfg.AttachmentsDir()
 
+	// IMAP page tokens are numeric offsets into a message list
+	// rebuilt from live mailbox state each session. Cross-session
+	// resume is unreliable because additions or deletions shift
+	// the offsets. Already-imported messages are efficiently
+	// skipped via MessageExistsWithRawBatch.
+	if src.SourceType == "imap" {
+		opts.NoResume = true
+	}
+
 	// Create syncer with progress reporter
 	syncer := sync.New(apiClient, s, opts).
 		WithLogger(logger).

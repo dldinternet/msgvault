@@ -425,6 +425,7 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 	}
 
 	// Parse MIME - on failure, store with placeholder body
+	// (threading override for IMAP happens after parsing below)
 	parsed, parseErr := mime.Parse(raw.Raw)
 	if parseErr != nil {
 		// Extract just the first line of error (enmime includes full stack traces)
@@ -443,6 +444,16 @@ func (s *Syncer) parseToModel(sourceID int64, raw *gmail.RawMessage, threadID st
 		s.logger.Warn("MIME parse failed, storing with placeholder",
 			"id", raw.ID,
 			"error", errMsg)
+	}
+
+	// For IMAP sources, the API provides no real thread info —
+	// ThreadID is just the composite message ID. Derive a thread
+	// key from MIME threading headers to group related messages
+	// into conversations.
+	if s.opts.SourceType == "imap" {
+		if derived := deriveThreadKey(parsed); derived != "" {
+			threadID = derived
+		}
 	}
 
 	// Ensure all text fields are valid UTF-8
@@ -690,6 +701,35 @@ func joinEmails(addrs []mime.Address) string {
 		}
 	}
 	return strings.Join(emails, " ")
+}
+
+// deriveThreadKey extracts a thread identifier from parsed MIME
+// headers. Returns the thread root Message-ID from References
+// (first entry per RFC 2822), falls back to InReplyTo for simple
+// replies, then to the message's own Message-ID. Returns "" when
+// no threading info is available.
+//
+// Angle brackets are stripped for consistency: parseReferences
+// already strips them, but InReplyTo/MessageID retain them from
+// the raw header. Without normalization the root message (using
+// MessageID "<X>") and its replies (using References "X") would
+// get different thread keys.
+func deriveThreadKey(parsed *mime.Message) string {
+	if len(parsed.References) > 0 {
+		return parsed.References[0]
+	}
+	if parsed.InReplyTo != "" {
+		return stripAngleBrackets(parsed.InReplyTo)
+	}
+	if parsed.MessageID != "" {
+		return stripAngleBrackets(parsed.MessageID)
+	}
+	return ""
+}
+
+// stripAngleBrackets removes surrounding < > from a message ID.
+func stripAngleBrackets(s string) string {
+	return strings.Trim(s, "<>")
 }
 
 // extractSubjectFromSnippet attempts to extract a subject from the message snippet.
