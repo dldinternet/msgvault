@@ -130,8 +130,7 @@ Examples:
 					}
 					mgr, mgrErr := getOAuthMgr()
 					if mgrErr != nil {
-						fmt.Printf("Skipping %s (%v)\n", src.Identifier, mgrErr)
-						continue
+						return mgrErr
 					}
 					if !src.SyncCursor.Valid || src.SyncCursor.String == "" {
 						fmt.Printf("Skipping %s (no history ID - run 'sync-full' first)\n", src.Identifier)
