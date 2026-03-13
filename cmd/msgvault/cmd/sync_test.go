@@ -222,3 +222,155 @@ func TestSyncCmd_SingleSourceNoAmbiguity(t *testing.T) {
 		t.Error("should not hit legacy fallback path")
 	}
 }
+
+// TestSyncCmd_MboxIdentifierDoesNotFallback verifies that an
+// identifier that exists only as a non-syncable source type (mbox)
+// returns a clear error instead of falling back to the legacy
+// Gmail path.
+func TestSyncCmd_MboxIdentifierDoesNotFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/msgvault.db"
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	_, err = s.GetOrCreateSource("mbox", "imported@example.com")
+	if err != nil {
+		t.Fatalf("create mbox source: %v", err)
+	}
+	_ = s.Close()
+
+	savedCfg := cfg
+	savedLogger := logger
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Test both sync and sync-full commands.
+	for _, tc := range []struct {
+		name string
+		runE func(*cobra.Command, []string) error
+	}{
+		{"sync", syncIncrementalCmd.RunE},
+		{"sync-full", syncFullCmd.RunE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testCmd := &cobra.Command{
+				Use:  tc.name + " [email]",
+				Args: cobra.MaximumNArgs(1),
+				RunE: tc.runE,
+			}
+
+			root := newTestRootCmd()
+			root.AddCommand(testCmd)
+			root.SetArgs([]string{
+				tc.name, "imported@example.com",
+			})
+
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("expected error for non-syncable source")
+			}
+
+			errMsg := err.Error()
+
+			if !strings.Contains(errMsg, "cannot be synced") {
+				t.Errorf(
+					"expected unsupported-source error; got: %s",
+					errMsg,
+				)
+			}
+		})
+	}
+}
+
+// TestSyncFullCmd_OAuthSkipDoesNotBlockIMAP verifies that in a
+// mixed Gmail+IMAP setup without OAuth configured, sync-full skips
+// the Gmail source and still syncs the IMAP source.
+func TestSyncFullCmd_OAuthSkipDoesNotBlockIMAP(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/msgvault.db"
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	_, err = s.GetOrCreateSource("gmail", "g@example.com")
+	if err != nil {
+		t.Fatalf("create gmail source: %v", err)
+	}
+	_, err = s.GetOrCreateSource("imap", "i@example.com")
+	if err != nil {
+		t.Fatalf("create imap source: %v", err)
+	}
+	_ = s.Close()
+
+	savedCfg := cfg
+	savedLogger := logger
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+	}()
+
+	// No OAuth configured — ClientSecrets is empty.
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	testCmd := &cobra.Command{
+		Use:  "sync-full [email]",
+		Args: cobra.MaximumNArgs(1),
+		RunE: syncFullCmd.RunE,
+	}
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	root.SetArgs([]string{"sync-full"})
+
+	// Capture stdout to check skip messages.
+	var execErr error
+	output := captureStdout(t, func() {
+		execErr = root.Execute()
+	})
+
+	// IMAP source should be attempted (and fail due to missing
+	// config), but the command should NOT abort entirely because
+	// of the Gmail OAuth failure.
+	if execErr == nil {
+		t.Fatal("expected error (IMAP has no config)")
+	}
+
+	// Gmail should be skipped, not cause an abort.
+	if !strings.Contains(output, "Skipping g@example.com") {
+		t.Errorf(
+			"Gmail source should be skipped; output:\n%s",
+			output,
+		)
+	}
+
+	// IMAP source should have been attempted.
+	if !strings.Contains(output, "i@example.com") {
+		t.Errorf(
+			"IMAP source should be attempted; output:\n%s",
+			output,
+		)
+	}
+}

@@ -106,6 +106,9 @@ Examples:
 				}
 			}
 			if len(gmailTargets) == 0 && len(imapTargets) == 0 {
+				if len(allMatches) > 0 {
+					return fmt.Errorf("account %q exists but its source type cannot be synced (only gmail and imap are supported)", args[0])
+				}
 				// Not in DB — assume Gmail (legacy behaviour)
 				gmailTargets = []syncTarget{{email: args[0]}}
 			}

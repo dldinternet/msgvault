@@ -98,6 +98,10 @@ Examples:
 				}
 			}
 			if len(sources) == 0 {
+				if len(allMatches) > 0 {
+					// Identifier exists but has no syncable source types.
+					return fmt.Errorf("account %q exists but its source type cannot be synced (only gmail and imap are supported)", args[0])
+				}
 				// Not in DB yet - assume Gmail (legacy behaviour)
 				sources = []*store.Source{{SourceType: "gmail", Identifier: args[0]}}
 			}
@@ -115,7 +119,8 @@ Examples:
 				case "gmail":
 					mgr, err := getOAuthMgr()
 					if err != nil {
-						return err
+						fmt.Printf("Skipping %s (OAuth not configured)\n", src.Identifier)
+						continue
 					}
 					if !mgr.HasToken(src.Identifier) {
 						fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
