@@ -83,6 +83,7 @@ Examples:
 
 		// Determine which sources to sync
 		var sources []*store.Source
+		var syncErrors []string
 		if len(args) == 1 {
 			// Look up all sources matching the identifier and
 			// keep only syncable types (gmail, imap). Non-syncable
@@ -123,7 +124,8 @@ Examples:
 					}
 					mgr, err := getOAuthMgr()
 					if err != nil {
-						return err
+						syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, err))
+						continue
 					}
 					if !mgr.HasToken(src.Identifier) {
 						fmt.Printf("Skipping %s (no OAuth token - run 'add-account' first)\n", src.Identifier)
@@ -141,6 +143,9 @@ Examples:
 				sources = append(sources, src)
 			}
 			if len(sources) == 0 {
+				if len(syncErrors) > 0 {
+					return fmt.Errorf("%s", syncErrors[0])
+				}
 				return fmt.Errorf("no accounts are ready to sync")
 			}
 		}
@@ -157,8 +162,6 @@ Examples:
 			fmt.Println("\nInterrupted. Saving checkpoint...")
 			cancel()
 		}()
-
-		var syncErrors []string
 		for _, src := range sources {
 			if ctx.Err() != nil {
 				break

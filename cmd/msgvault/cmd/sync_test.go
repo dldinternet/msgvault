@@ -377,3 +377,210 @@ func TestSyncFullCmd_OAuthSkipDoesNotBlockIMAP(t *testing.T) {
 		)
 	}
 }
+
+// TestSyncCmd_BrokenOAuthDoesNotBlockIMAP verifies that a malformed
+// client_secrets file does not prevent IMAP sources from syncing in
+// the no-args discovery path. The OAuth error should be reported
+// after IMAP work completes.
+func TestSyncCmd_BrokenOAuthDoesNotBlockIMAP(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		runE func(*cobra.Command, []string) error
+	}{
+		{"sync", syncIncrementalCmd.RunE},
+		{"sync-full", syncFullCmd.RunE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			dbPath := tmpDir + "/msgvault.db"
+
+			s, err := store.Open(dbPath)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			if err := s.InitSchema(); err != nil {
+				t.Fatalf("init schema: %v", err)
+			}
+
+			gmailSrc, err := s.GetOrCreateSource(
+				"gmail", "g@example.com",
+			)
+			if err != nil {
+				t.Fatalf("create gmail source: %v", err)
+			}
+			// Give Gmail source a cursor so it passes
+			// the sync command's discovery checks.
+			if err := s.UpdateSourceSyncCursor(gmailSrc.ID, "1"); err != nil {
+				t.Fatalf("set cursor: %v", err)
+			}
+
+			_, err = s.GetOrCreateSource(
+				"imap", "i@example.com",
+			)
+			if err != nil {
+				t.Fatalf("create imap source: %v", err)
+			}
+			_ = s.Close()
+
+			// Write a malformed client_secret.json.
+			secretsPath := filepath.Join(
+				tmpDir, "client_secret.json",
+			)
+			err = os.WriteFile(
+				secretsPath, []byte("not json"), 0600,
+			)
+			if err != nil {
+				t.Fatalf("write secrets: %v", err)
+			}
+
+			savedCfg := cfg
+			savedLogger := logger
+			defer func() {
+				cfg = savedCfg
+				logger = savedLogger
+			}()
+
+			cfg = &config.Config{
+				HomeDir: tmpDir,
+				Data:    config.DataConfig{DataDir: tmpDir},
+				OAuth: config.OAuthConfig{
+					ClientSecrets: secretsPath,
+				},
+			}
+			logger = slog.New(
+				slog.NewTextHandler(os.Stderr, nil),
+			)
+
+			testCmd := &cobra.Command{
+				Use:  tc.name + " [email]",
+				Args: cobra.MaximumNArgs(1),
+				RunE: tc.runE,
+			}
+
+			root := newTestRootCmd()
+			root.AddCommand(testCmd)
+			root.SetArgs([]string{tc.name})
+
+			var execErr error
+			output := captureStdout(t, func() {
+				execErr = root.Execute()
+			})
+
+			if execErr == nil {
+				t.Fatal("expected error")
+			}
+
+			errMsg := execErr.Error()
+
+			// IMAP source should be attempted (appears in
+			// output), not blocked by the OAuth failure.
+			if !strings.Contains(output, "i@example.com") {
+				t.Errorf(
+					"IMAP source should be attempted; "+
+						"output:\n%s",
+					output,
+				)
+			}
+
+			// The OAuth error should be surfaced, not
+			// masked as "no accounts are ready to sync".
+			if strings.Contains(errMsg, "no accounts are ready") {
+				t.Errorf(
+					"should surface OAuth error, not "+
+						"generic message; got: %s",
+					errMsg,
+				)
+			}
+		})
+	}
+}
+
+// TestSyncCmd_GmailOnlyBrokenOAuthSurfacesError verifies that when
+// only Gmail sources exist and OAuth is broken, the actual error is
+// returned, not "no accounts are ready to sync".
+func TestSyncCmd_GmailOnlyBrokenOAuthSurfacesError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		runE func(*cobra.Command, []string) error
+	}{
+		{"sync", syncIncrementalCmd.RunE},
+		{"sync-full", syncFullCmd.RunE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			dbPath := tmpDir + "/msgvault.db"
+
+			s, err := store.Open(dbPath)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			if err := s.InitSchema(); err != nil {
+				t.Fatalf("init schema: %v", err)
+			}
+
+			gmailSrc, err := s.GetOrCreateSource(
+				"gmail", "g@example.com",
+			)
+			if err != nil {
+				t.Fatalf("create source: %v", err)
+			}
+			if err := s.UpdateSourceSyncCursor(gmailSrc.ID, "1"); err != nil {
+				t.Fatalf("set cursor: %v", err)
+			}
+			_ = s.Close()
+
+			secretsPath := filepath.Join(
+				tmpDir, "client_secret.json",
+			)
+			err = os.WriteFile(
+				secretsPath, []byte("not json"), 0600,
+			)
+			if err != nil {
+				t.Fatalf("write secrets: %v", err)
+			}
+
+			savedCfg := cfg
+			savedLogger := logger
+			defer func() {
+				cfg = savedCfg
+				logger = savedLogger
+			}()
+
+			cfg = &config.Config{
+				HomeDir: tmpDir,
+				Data:    config.DataConfig{DataDir: tmpDir},
+				OAuth: config.OAuthConfig{
+					ClientSecrets: secretsPath,
+				},
+			}
+			logger = slog.New(
+				slog.NewTextHandler(os.Stderr, nil),
+			)
+
+			testCmd := &cobra.Command{
+				Use:  tc.name + " [email]",
+				Args: cobra.MaximumNArgs(1),
+				RunE: tc.runE,
+			}
+
+			root := newTestRootCmd()
+			root.AddCommand(testCmd)
+			root.SetArgs([]string{tc.name})
+
+			err = root.Execute()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+
+			errMsg := err.Error()
+
+			// Should surface the real OAuth parse error.
+			if !strings.Contains(errMsg, "client secrets") {
+				t.Errorf(
+					"expected OAuth parse error; got: %s",
+					errMsg,
+				)
+			}
+		})
+	}
+}

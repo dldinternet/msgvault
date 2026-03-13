@@ -89,6 +89,7 @@ Examples:
 		}
 		var gmailTargets []syncTarget
 		var imapTargets []*store.Source
+		var syncErrors []string
 
 		if len(args) == 1 {
 			// Resolve all sources for the identifier and route
@@ -130,7 +131,8 @@ Examples:
 					}
 					mgr, mgrErr := getOAuthMgr()
 					if mgrErr != nil {
-						return mgrErr
+						syncErrors = append(syncErrors, fmt.Sprintf("%s: %v", src.Identifier, mgrErr))
+						continue
 					}
 					if !src.SyncCursor.Valid || src.SyncCursor.String == "" {
 						fmt.Printf("Skipping %s (no history ID - run 'sync-full' first)\n", src.Identifier)
@@ -152,11 +154,13 @@ Examples:
 				}
 			}
 			if len(gmailTargets) == 0 && len(imapTargets) == 0 {
+				if len(syncErrors) > 0 {
+					// Surface the collected errors (e.g. broken OAuth config).
+					return fmt.Errorf("%s", syncErrors[0])
+				}
 				return fmt.Errorf("no accounts are ready to sync")
 			}
 		}
-
-		var syncErrors []string
 
 		// Sync IMAP sources via full sync.
 		for _, src := range imapTargets {
