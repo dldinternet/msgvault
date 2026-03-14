@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -145,7 +146,7 @@ func DiscoverV10Accounts(mailDir, accountsDBPath string, logger *slog.Logger) ([
 // only the highest-numbered version is used to avoid importing
 // stale data from older layouts.
 func findV10GUIDs(mailDir string) ([]string, error) {
-	vDir, err := newestVDir(mailDir)
+	vDir, err := newestVDirWithGUIDs(mailDir)
 	if err != nil {
 		return nil, err
 	}
@@ -169,56 +170,79 @@ func findV10GUIDs(mailDir string) ([]string, error) {
 }
 
 // V10AccountDir returns the path to a V10 account directory for the
-// given GUID within mailDir. Uses only the newest V* directory.
+// given GUID within mailDir. Searches V* directories from newest to
+// oldest and returns the first match.
 func V10AccountDir(mailDir, guid string) (string, error) {
-	vDir, err := newestVDir(mailDir)
+	vDirs, err := sortedVDirs(mailDir)
 	if err != nil {
 		return "", err
 	}
-	if vDir == "" {
+	if len(vDirs) == 0 {
 		return "", fmt.Errorf(
 			"no V* directory found in %s", mailDir,
 		)
 	}
 
-	candidate := filepath.Join(vDir, guid)
-	if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
-		return candidate, nil
+	for _, vDir := range vDirs {
+		candidate := filepath.Join(vDir, guid)
+		if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+			return candidate, nil
+		}
 	}
 
 	return "", fmt.Errorf(
-		"no directory found for GUID %s in %s", guid, vDir,
+		"no directory found for GUID %s in %s", guid, mailDir,
 	)
 }
 
-// newestVDir returns the path to the highest-numbered V* directory
-// in mailDir (e.g. V10 over V2). Returns "" if none found.
-func newestVDir(mailDir string) (string, error) {
-	entries, err := os.ReadDir(mailDir)
+// newestVDirWithGUIDs returns the path to the highest-numbered V*
+// directory that contains at least one UUID subdirectory. Falls back
+// to older V* directories when the newest one is empty.
+// Returns "" if no V* directory with UUIDs is found.
+func newestVDirWithGUIDs(mailDir string) (string, error) {
+	vDirs, err := sortedVDirs(mailDir)
 	if err != nil {
 		return "", err
 	}
+	for _, vDir := range vDirs {
+		entries, err := os.ReadDir(vDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() && emlx.IsUUID(e.Name()) {
+				return vDir, nil
+			}
+		}
+	}
+	return "", nil
+}
 
-	bestName := ""
+// sortedVDirs returns all V* directories in mailDir sorted from
+// newest to oldest (e.g. V10, V9, V2).
+func sortedVDirs(mailDir string) ([]string, error) {
+	entries, err := os.ReadDir(mailDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var vNames []string
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !strings.HasPrefix(name, "V") {
-			continue
-		}
-		// Compare version strings; longer numeric suffix wins
-		// (V10 > V9 > V2). For equal lengths, lexicographic works.
-		if bestName == "" || versionGreater(name, bestName) {
-			bestName = name
+		if e.IsDir() && strings.HasPrefix(e.Name(), "V") {
+			vNames = append(vNames, e.Name())
 		}
 	}
 
-	if bestName == "" {
-		return "", nil
+	// Sort newest-first.
+	sort.Slice(vNames, func(i, j int) bool {
+		return versionGreater(vNames[i], vNames[j])
+	})
+
+	result := make([]string, len(vNames))
+	for i, name := range vNames {
+		result[i] = filepath.Join(mailDir, name)
 	}
-	return filepath.Join(mailDir, bestName), nil
+	return result, nil
 }
 
 // versionGreater returns true if a > b where both are "V<number>"

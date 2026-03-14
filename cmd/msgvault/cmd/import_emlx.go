@@ -63,9 +63,12 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Legacy two-arg form: import-emlx <identifier> <mail-dir>
 		if len(args) == 2 {
-			if importEmlxIdentifier == "" {
-				importEmlxIdentifier = args[0]
+			if importEmlxIdentifier != "" {
+				return fmt.Errorf(
+					"cannot use --identifier with two positional arguments",
+				)
 			}
+			importEmlxIdentifier = args[0]
 			args = args[1:]
 		}
 

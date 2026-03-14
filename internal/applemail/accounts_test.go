@@ -59,6 +59,13 @@ type testAccount struct {
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
 
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %q: %v", path, err)
+	}
+}
+
 func TestResolveAccounts(t *testing.T) {
 	// Set up accounts mimicking real Accounts4.sqlite:
 	// - PK 1: Google parent (has email, description "Google")
@@ -322,30 +329,54 @@ func TestFindV10GUIDs(t *testing.T) {
 	}
 }
 
-func TestNewestVDir(t *testing.T) {
+func TestNewestVDirWithGUIDs(t *testing.T) {
+	guid := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+
 	tests := []struct {
 		name    string
-		dirs    []string
+		setup   func(t *testing.T, mailDir string)
 		wantDir string
 	}{
 		{
-			name:    "single V10",
-			dirs:    []string{"V10"},
+			name: "single V10 with GUID",
+			setup: func(t *testing.T, mailDir string) {
+				t.Helper()
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", guid))
+			},
 			wantDir: "V10",
 		},
 		{
-			name:    "V2 and V10 picks V10",
-			dirs:    []string{"V2", "V10"},
+			name: "V2 and V10 picks V10",
+			setup: func(t *testing.T, mailDir string) {
+				t.Helper()
+				mustMkdirAll(t, filepath.Join(mailDir, "V2", guid))
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", guid))
+			},
 			wantDir: "V10",
 		},
 		{
-			name:    "V9 and V10 picks V10",
-			dirs:    []string{"V9", "V10"},
-			wantDir: "V10",
+			name: "empty V10 falls back to V9 with GUIDs",
+			setup: func(t *testing.T, mailDir string) {
+				t.Helper()
+				mustMkdirAll(t, filepath.Join(mailDir, "V10"))
+				mustMkdirAll(t, filepath.Join(mailDir, "V9", guid))
+			},
+			wantDir: "V9",
 		},
 		{
-			name:    "no V dirs",
-			dirs:    []string{"Other", "MailData"},
+			name: "no V dirs",
+			setup: func(t *testing.T, mailDir string) {
+				t.Helper()
+				mustMkdirAll(t, filepath.Join(mailDir, "Other"))
+			},
+			wantDir: "",
+		},
+		{
+			name: "V dir with only non-UUID subdirs",
+			setup: func(t *testing.T, mailDir string) {
+				t.Helper()
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", "MailData"))
+			},
 			wantDir: "",
 		},
 	}
@@ -353,15 +384,11 @@ func TestNewestVDir(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mailDir := t.TempDir()
-			for _, d := range tt.dirs {
-				if err := os.MkdirAll(filepath.Join(mailDir, d), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
+			tt.setup(t, mailDir)
 
-			got, err := newestVDir(mailDir)
+			got, err := newestVDirWithGUIDs(mailDir)
 			if err != nil {
-				t.Fatalf("newestVDir: %v", err)
+				t.Fatalf("newestVDirWithGUIDs: %v", err)
 			}
 
 			if tt.wantDir == "" {
