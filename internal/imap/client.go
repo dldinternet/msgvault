@@ -850,13 +850,21 @@ func (c *Client) TrashMessage(ctx context.Context, messageID string) error {
 }
 
 // DeleteMessage permanently deletes a message using UID STORE \Deleted
-// followed by UID EXPUNGE (UIDPLUS) or plain EXPUNGE as a fallback.
+// + UID EXPUNGE. Requires the UIDPLUS extension (RFC 4315); without it
+// plain EXPUNGE would remove every \Deleted message in the mailbox,
+// not just the target.
 func (c *Client) DeleteMessage(ctx context.Context, messageID string) error {
 	mailbox, uid, err := parseCompositeID(messageID)
 	if err != nil {
 		return err
 	}
 	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		if !conn.Caps().Has(imap.CapUIDPlus) {
+			return fmt.Errorf(
+				"server does not support UIDPLUS; " +
+					"permanent delete requires UID EXPUNGE " +
+					"(use trash instead)")
+		}
 		if err := c.selectMailbox(mailbox); err != nil {
 			return err
 		}
@@ -869,14 +877,8 @@ func (c *Client) DeleteMessage(ctx context.Context, messageID string) error {
 		}, nil).Close(); err != nil {
 			return fmt.Errorf("UID STORE \\Deleted: %w", err)
 		}
-		if conn.Caps().Has(imap.CapUIDPlus) {
-			if err := conn.UIDExpunge(uidSet).Close(); err != nil {
-				return fmt.Errorf("UID EXPUNGE: %w", err)
-			}
-		} else {
-			if err := conn.Expunge().Close(); err != nil {
-				return fmt.Errorf("EXPUNGE: %w", err)
-			}
+		if err := conn.UIDExpunge(uidSet).Close(); err != nil {
+			return fmt.Errorf("UID EXPUNGE: %w", err)
 		}
 		return nil
 	})
