@@ -1701,16 +1701,17 @@ func TestIMAPCrossSyncDedup(t *testing.T) {
 		Body("Same message, different mailbox.").
 		Bytes()
 
-	// First sync: message is in All Mail
+	// First sync: message is in INBOX
 	env.Mock.Profile.MessagesTotal = 1
 	env.Mock.Profile.HistoryID = 100
-	env.Mock.AddMessage("AllMail|42", msg, []string{"AllMail"})
+	env.Mock.AddMessage("INBOX|42", msg, []string{"INBOX"})
 	summary := runFullSync(t, env)
 	assertSummary(t, summary, WantSummary{Added: intPtr(1)})
+	assertMessageHasLabel(t, env.Store, "INBOX|42", "INBOX")
 
 	// Second sync: message moved to Trash (different composite ID)
-	delete(env.Mock.Messages, "AllMail|42")
-	env.Mock.AddMessage("Trash|99", msg, []string{"Trash"})
+	delete(env.Mock.Messages, "INBOX|42")
+	env.Mock.AddMessage("TRASH|99", msg, []string{"TRASH"})
 	summary = runFullSync(t, env)
 	// Should be skipped via RFC822 Message-ID dedup, not re-imported
 	assertSummary(t, summary, WantSummary{Added: intPtr(0)})
@@ -1725,6 +1726,24 @@ func TestIMAPCrossSyncDedup(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1 message, got %d (duplicate imported)", count)
 	}
+
+	// The existing row's source_message_id should be updated to the
+	// new composite ID so future syncs don't re-download the message.
+	var srcMsgID string
+	err = env.Store.DB().QueryRow(
+		`SELECT source_message_id FROM messages LIMIT 1`,
+	).Scan(&srcMsgID)
+	if err != nil {
+		t.Fatalf("get source_message_id: %v", err)
+	}
+	if srcMsgID != "TRASH|99" {
+		t.Errorf("source_message_id not updated: got %q, want %q",
+			srcMsgID, "TRASH|99")
+	}
+
+	// Labels should reflect the new mailbox.
+	assertMessageHasLabel(t, env.Store, "TRASH|99", "TRASH")
+	assertMessageNotHasLabel(t, env.Store, "TRASH|99", "INBOX")
 }
 
 // TestIncrementalSyncLabelRemovedWithMissingRaw verifies that removing a label

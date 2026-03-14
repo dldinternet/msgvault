@@ -662,14 +662,30 @@ func (s *Syncer) ingestMessage(ctx context.Context, sourceID int64, raw *gmail.R
 	// Message-ID already exists under a different composite ID.
 	// This handles messages that moved between mailboxes across
 	// syncs (e.g. All Mail → Trash changes the mailbox|uid key).
+	// When matched, update the existing row's composite ID and
+	// labels so future syncs skip it at the ID-filtering stage
+	// instead of re-downloading the MIME body each time.
 	if s.opts.SourceType == "imap" &&
 		data.message.RFC822MessageID.Valid {
-		exists, err := s.store.MessageExistsByRFC822ID(
+		existingID, err := s.store.GetMessageIDByRFC822ID(
 			sourceID, data.message.RFC822MessageID.String)
 		if err != nil {
 			return fmt.Errorf("check rfc822 dedup: %w", err)
 		}
-		if exists {
+		if existingID > 0 {
+			var labelIDs []int64
+			for _, lbl := range data.gmailLabelIDs {
+				if id, ok := labelMap[lbl]; ok {
+					labelIDs = append(labelIDs, id)
+				}
+			}
+			if err := s.store.UpdateMessageOnDedup(
+				existingID,
+				data.message.SourceMessageID,
+				labelIDs,
+			); err != nil {
+				return fmt.Errorf("update dedup message: %w", err)
+			}
 			return errDuplicateRFC822
 		}
 	}

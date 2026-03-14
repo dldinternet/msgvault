@@ -86,18 +86,42 @@ func (s *Store) MessageExistsBatch(sourceID int64, sourceMessageIDs []string) (m
 	return result, nil
 }
 
-// MessageExistsByRFC822ID checks if a message with the given
-// RFC822 Message-ID already exists for this source.
-func (s *Store) MessageExistsByRFC822ID(
+// GetMessageIDByRFC822ID returns the internal ID of a message
+// with the given RFC822 Message-ID for this source, or 0 if
+// no match exists.
+func (s *Store) GetMessageIDByRFC822ID(
 	sourceID int64, rfc822ID string,
-) (bool, error) {
-	var count int
+) (int64, error) {
+	var id int64
 	err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM messages
+		`SELECT id FROM messages
 		 WHERE source_id = ? AND rfc822_message_id = ?`,
 		sourceID, rfc822ID,
-	).Scan(&count)
-	return count > 0, err
+	).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
+// UpdateMessageOnDedup updates an existing message's composite ID
+// and labels when a cross-mailbox RFC822 dedup match is found.
+// This ensures future syncs recognize the message under its new
+// mailbox|uid key and don't re-download it.
+func (s *Store) UpdateMessageOnDedup(
+	messageID int64, newSourceMessageID string,
+	labelIDs []int64,
+) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`UPDATE messages SET source_message_id = ?
+			 WHERE id = ?`,
+			newSourceMessageID, messageID,
+		); err != nil {
+			return fmt.Errorf("update source_message_id: %w", err)
+		}
+		return replaceMessageLabelsTx(tx, messageID, labelIDs)
+	})
 }
 
 // MessageExistsWithRawBatch checks which message IDs already exist in the database
