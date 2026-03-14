@@ -291,93 +291,67 @@ func TestDiscoverV10Accounts(t *testing.T) {
 }
 
 func TestFindV10GUIDs(t *testing.T) {
-	mailDir := t.TempDir()
-
-	// Create V10 with UUID dirs plus non-UUID.
-	v10 := filepath.Join(mailDir, "V10")
-	guid := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
-	if err := os.MkdirAll(filepath.Join(v10, guid), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(v10, "MailData"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create V2 with another UUID — should be ignored (V10 is newer).
-	v2 := filepath.Join(mailDir, "V2")
-	staleGUID := "11111111-2222-3333-4444-555555555555"
-	if err := os.MkdirAll(filepath.Join(v2, staleGUID), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Non-V directory should be ignored.
-	if err := os.MkdirAll(filepath.Join(mailDir, "Other", "FFFFFFFF-0000-0000-0000-000000000000"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	guids, err := findV10GUIDs(mailDir)
-	if err != nil {
-		t.Fatalf("findV10GUIDs: %v", err)
-	}
-
-	if len(guids) != 1 {
-		t.Fatalf("got %d GUIDs, want 1 (only from newest V dir): %v", len(guids), guids)
-	}
-
-	if guids[0] != guid {
-		t.Errorf("got GUID %s, want %s (from V10)", guids[0], guid)
-	}
-}
-
-func TestNewestVDirWithGUIDs(t *testing.T) {
-	guid := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+	guidA := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+	guidB := "11111111-2222-3333-4444-555555555555"
+	guidC := "99999999-8888-7777-6666-555544443333"
 
 	tests := []struct {
-		name    string
-		setup   func(t *testing.T, mailDir string)
-		wantDir string
+		name      string
+		setup     func(t *testing.T, mailDir string)
+		wantGUIDs []string
 	}{
 		{
-			name: "single V10 with GUID",
+			name: "single V10 dir",
 			setup: func(t *testing.T, mailDir string) {
 				t.Helper()
-				mustMkdirAll(t, filepath.Join(mailDir, "V10", guid))
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", guidA))
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", "MailData"))
 			},
-			wantDir: "V10",
+			wantGUIDs: []string{guidA},
 		},
 		{
-			name: "V2 and V10 picks V10",
+			name: "same GUID in V2 and V10 deduplicates",
 			setup: func(t *testing.T, mailDir string) {
 				t.Helper()
-				mustMkdirAll(t, filepath.Join(mailDir, "V2", guid))
-				mustMkdirAll(t, filepath.Join(mailDir, "V10", guid))
+				mustMkdirAll(t, filepath.Join(mailDir, "V2", guidA))
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", guidA))
 			},
-			wantDir: "V10",
+			wantGUIDs: []string{guidA},
 		},
 		{
-			name: "empty V10 falls back to V9 with GUIDs",
+			name: "partially populated V10 discovers older-only accounts",
+			setup: func(t *testing.T, mailDir string) {
+				t.Helper()
+				mustMkdirAll(t, filepath.Join(mailDir, "V10", guidA))
+				mustMkdirAll(t, filepath.Join(mailDir, "V9", guidA))
+				mustMkdirAll(t, filepath.Join(mailDir, "V9", guidB))
+			},
+			wantGUIDs: []string{guidA, guidB},
+		},
+		{
+			name: "empty V10 discovers from V9",
 			setup: func(t *testing.T, mailDir string) {
 				t.Helper()
 				mustMkdirAll(t, filepath.Join(mailDir, "V10"))
-				mustMkdirAll(t, filepath.Join(mailDir, "V9", guid))
+				mustMkdirAll(t, filepath.Join(mailDir, "V9", guidC))
 			},
-			wantDir: "V9",
+			wantGUIDs: []string{guidC},
 		},
 		{
-			name: "no V dirs",
+			name: "non-V directory ignored",
 			setup: func(t *testing.T, mailDir string) {
 				t.Helper()
-				mustMkdirAll(t, filepath.Join(mailDir, "Other"))
+				mustMkdirAll(t, filepath.Join(mailDir, "Other", guidA))
 			},
-			wantDir: "",
+			wantGUIDs: nil,
 		},
 		{
-			name: "V dir with only non-UUID subdirs",
+			name: "non-UUID subdirs ignored",
 			setup: func(t *testing.T, mailDir string) {
 				t.Helper()
 				mustMkdirAll(t, filepath.Join(mailDir, "V10", "MailData"))
 			},
-			wantDir: "",
+			wantGUIDs: nil,
 		},
 	}
 
@@ -386,21 +360,24 @@ func TestNewestVDirWithGUIDs(t *testing.T) {
 			mailDir := t.TempDir()
 			tt.setup(t, mailDir)
 
-			got, err := newestVDirWithGUIDs(mailDir)
+			guids, err := findV10GUIDs(mailDir)
 			if err != nil {
-				t.Fatalf("newestVDirWithGUIDs: %v", err)
+				t.Fatalf("findV10GUIDs: %v", err)
 			}
 
-			if tt.wantDir == "" {
-				if got != "" {
-					t.Errorf("got %q, want empty", got)
+			if len(guids) != len(tt.wantGUIDs) {
+				t.Fatalf("got %d GUIDs %v, want %d %v",
+					len(guids), guids, len(tt.wantGUIDs), tt.wantGUIDs)
+			}
+
+			got := make(map[string]bool)
+			for _, g := range guids {
+				got[g] = true
+			}
+			for _, want := range tt.wantGUIDs {
+				if !got[want] {
+					t.Errorf("missing GUID %s in result %v", want, guids)
 				}
-				return
-			}
-
-			want := filepath.Join(mailDir, tt.wantDir)
-			if got != want {
-				t.Errorf("got %q, want %q", got, want)
 			}
 		})
 	}

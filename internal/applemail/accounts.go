@@ -141,28 +141,28 @@ func DiscoverV10Accounts(mailDir, accountsDBPath string, logger *slog.Logger) ([
 }
 
 // findV10GUIDs scans mailDir for V*/ directories containing UUID
-// subdirectories and returns the unique GUIDs found. When multiple
-// V* directories exist (e.g. V2 and V10 after a macOS upgrade),
-// only the highest-numbered version is used to avoid importing
-// stale data from older layouts.
+// subdirectories and returns the unique GUIDs found. Scans all V*
+// directories from newest to oldest so that partially populated
+// newer directories don't hide accounts that only exist in older ones.
+// Deduplicates by GUID (newest wins).
 func findV10GUIDs(mailDir string) ([]string, error) {
-	vDir, err := newestVDirWithGUIDs(mailDir)
-	if err != nil {
-		return nil, err
-	}
-	if vDir == "" {
-		return nil, nil
-	}
-
-	subEntries, err := os.ReadDir(vDir)
+	vDirs, err := sortedVDirs(mailDir)
 	if err != nil {
 		return nil, err
 	}
 
+	seen := make(map[string]bool)
 	var guids []string
-	for _, sub := range subEntries {
-		if sub.IsDir() && emlx.IsUUID(sub.Name()) {
-			guids = append(guids, sub.Name())
+	for _, vDir := range vDirs {
+		subEntries, err := os.ReadDir(vDir)
+		if err != nil {
+			continue
+		}
+		for _, sub := range subEntries {
+			if sub.IsDir() && emlx.IsUUID(sub.Name()) && !seen[sub.Name()] {
+				seen[sub.Name()] = true
+				guids = append(guids, sub.Name())
+			}
 		}
 	}
 
@@ -193,29 +193,6 @@ func V10AccountDir(mailDir, guid string) (string, error) {
 	return "", fmt.Errorf(
 		"no directory found for GUID %s in %s", guid, mailDir,
 	)
-}
-
-// newestVDirWithGUIDs returns the path to the highest-numbered V*
-// directory that contains at least one UUID subdirectory. Falls back
-// to older V* directories when the newest one is empty.
-// Returns "" if no V* directory with UUIDs is found.
-func newestVDirWithGUIDs(mailDir string) (string, error) {
-	vDirs, err := sortedVDirs(mailDir)
-	if err != nil {
-		return "", err
-	}
-	for _, vDir := range vDirs {
-		entries, err := os.ReadDir(vDir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() && emlx.IsUUID(e.Name()) {
-				return vDir, nil
-			}
-		}
-	}
-	return "", nil
 }
 
 // sortedVDirs returns all V* directories in mailDir sorted from

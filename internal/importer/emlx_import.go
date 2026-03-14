@@ -404,19 +404,17 @@ func ImportEmlxDir(
 			"index", mboxIdx,
 		)
 
-		for _, fileName := range mb.Files {
+		for _, filePath := range mb.Files {
 			if ctx.Err() != nil {
 				break
 			}
 
 			// Resume: skip files already processed.
 			if mboxIdx == startMbox && startAfter != "" {
-				if fileName <= startAfter {
+				if filePath <= startAfter {
 					continue
 				}
 			}
-
-			filePath := mb.FilePath(fileName)
 
 			// Check file size before reading to avoid OOM on oversized files.
 			fi, statErr := os.Stat(filePath)
@@ -486,7 +484,7 @@ func ImportEmlxDir(
 					Fallback:  fallbackDate,
 					MboxIdx:   mboxIdx,
 					MboxPath:  mb.Path,
-					FileName:  fileName,
+					FileName:  filePath,
 				})
 				pendingBytes += int64(len(msg.Raw))
 			}
