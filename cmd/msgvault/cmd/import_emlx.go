@@ -278,6 +278,7 @@ func importAutoAccounts(
 		identifier := account.Identifier()
 		accountDir, err := applemail.V10AccountDir(mailDir, account.GUID)
 		if err != nil {
+			importErrors = append(importErrors, fmt.Errorf("%s: %w", identifier, err))
 			fmt.Fprintf(out, "Skipping %s: %v\n", identifier, err)
 			continue
 		}

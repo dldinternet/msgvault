@@ -71,8 +71,8 @@ func ResolveAccounts(dbPath string, guids []string) (map[string]AccountInfo, err
 	query := `
 		SELECT
 			child.ZIDENTIFIER,
-			COALESCE(child.ZUSERNAME, parent.ZUSERNAME, '') AS email,
-			COALESCE(parent.ZACCOUNTDESCRIPTION, child.ZACCOUNTDESCRIPTION, '') AS description
+			COALESCE(NULLIF(child.ZUSERNAME, ''), NULLIF(parent.ZUSERNAME, ''), '') AS email,
+			COALESCE(NULLIF(parent.ZACCOUNTDESCRIPTION, ''), NULLIF(child.ZACCOUNTDESCRIPTION, ''), '') AS description
 		FROM ZACCOUNT child
 		LEFT JOIN ZACCOUNT parent ON parent.Z_PK = child.ZPARENTACCOUNT
 		WHERE child.ZIDENTIFIER IN (` + strings.Join(placeholders, ",") + `)
