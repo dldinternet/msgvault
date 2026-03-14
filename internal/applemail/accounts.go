@@ -171,7 +171,9 @@ func findV10GUIDs(mailDir string) ([]string, error) {
 
 // V10AccountDir returns the path to a V10 account directory for the
 // given GUID within mailDir. Searches V* directories from newest to
-// oldest and returns the first match.
+// oldest, preferring the newest directory that contains mailbox
+// subdirectories (.mbox/.imapmbox). Falls back to the newest
+// existing directory if none are populated.
 func V10AccountDir(mailDir, guid string) (string, error) {
 	vDirs, err := sortedVDirs(mailDir)
 	if err != nil {
@@ -183,16 +185,47 @@ func V10AccountDir(mailDir, guid string) (string, error) {
 		)
 	}
 
+	var firstMatch string
 	for _, vDir := range vDirs {
 		candidate := filepath.Join(vDir, guid)
-		if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+		info, statErr := os.Stat(candidate)
+		if statErr != nil || !info.IsDir() {
+			continue
+		}
+		if firstMatch == "" {
+			firstMatch = candidate
+		}
+		if hasMailboxDirs(candidate) {
 			return candidate, nil
 		}
 	}
 
+	if firstMatch != "" {
+		return firstMatch, nil
+	}
 	return "", fmt.Errorf(
 		"no directory found for GUID %s in %s", guid, mailDir,
 	)
+}
+
+// hasMailboxDirs returns true if dir contains at least one .mbox or
+// .imapmbox subdirectory.
+func hasMailboxDirs(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		lower := strings.ToLower(e.Name())
+		if strings.HasSuffix(lower, ".mbox") ||
+			strings.HasSuffix(lower, ".imapmbox") {
+			return true
+		}
+	}
+	return false
 }
 
 // sortedVDirs returns all V* directories in mailDir sorted from

@@ -187,10 +187,14 @@ func ImportEmlxDir(
 					// different Messages/ subdirectories.
 					if startAfter != "" &&
 						!filepath.IsAbs(startAfter) {
-						startAfter = resolveCheckpointFile(
+						resolved, resolveErr := resolveCheckpointFile(
 							startAfter,
 							mailboxes[ecp.MailboxIndex].Files,
 						)
+						if resolveErr != nil {
+							return nil, resolveErr
+						}
+						startAfter = resolved
 					}
 					summary.WasResumed = true
 					log.Info("resuming emlx import",
@@ -574,9 +578,12 @@ func ImportEmlxDir(
 // resolveCheckpointFile finds the full path in files whose basename
 // matches the legacy bare filename from an older checkpoint. Returns
 // the last matching full path (since files are sorted, this is the
-// one the checkpoint would have referred to). If no match is found,
-// returns the original basename as a fallback.
-func resolveCheckpointFile(basename string, files []string) string {
+// one the checkpoint would have referred to). Returns an error if no
+// match is found, since comparing a bare filename against absolute
+// paths would produce incorrect resume behavior.
+func resolveCheckpointFile(
+	basename string, files []string,
+) (string, error) {
 	var match string
 	for _, f := range files {
 		if filepath.Base(f) == basename {
@@ -584,9 +591,12 @@ func resolveCheckpointFile(basename string, files []string) string {
 		}
 	}
 	if match != "" {
-		return match
+		return match, nil
 	}
-	return basename
+	return "", fmt.Errorf(
+		"legacy checkpoint file %q not found in current mailbox; rerun with --no-resume to start fresh",
+		basename,
+	)
 }
 
 func saveEmlxCheckpoint(

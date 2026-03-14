@@ -61,14 +61,18 @@ Examples:
 	Args:         cobra.MaximumNArgs(2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Use a local copy so we don't mutate the package-global
+		// flag variable (which persists across Execute() calls).
+		identifier := importEmlxIdentifier
+
 		// Legacy two-arg form: import-emlx <identifier> <mail-dir>
 		if len(args) == 2 {
-			if importEmlxIdentifier != "" {
+			if identifier != "" {
 				return fmt.Errorf(
 					"cannot use --identifier with two positional arguments",
 				)
 			}
-			importEmlxIdentifier = args[0]
+			identifier = args[0]
 			args = args[1:]
 		}
 
@@ -152,9 +156,9 @@ Examples:
 			attachmentsDir = ""
 		}
 
-		if importEmlxIdentifier != "" {
+		if identifier != "" {
 			// Manual fallback: single import with explicit identifier.
-			return importSingleAccount(ctx, cmd, st, mailDir, importEmlxIdentifier, attachmentsDir)
+			return importSingleAccount(ctx, cmd, st, mailDir, identifier, attachmentsDir)
 		}
 
 		// Auto mode: discover accounts from V10 layout + Accounts4.sqlite.

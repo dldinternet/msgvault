@@ -382,3 +382,43 @@ func TestFindV10GUIDs(t *testing.T) {
 		})
 	}
 }
+
+func TestV10AccountDir_PrefersPopulated(t *testing.T) {
+	guid := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+	mailDir := t.TempDir()
+
+	// V10 has the GUID dir but no mailboxes inside.
+	mustMkdirAll(t, filepath.Join(mailDir, "V10", guid))
+
+	// V9 has the GUID dir with actual mailbox content.
+	mustMkdirAll(t, filepath.Join(mailDir, "V9", guid, "INBOX.mbox"))
+
+	got, err := V10AccountDir(mailDir, guid)
+	if err != nil {
+		t.Fatalf("V10AccountDir: %v", err)
+	}
+
+	want := filepath.Join(mailDir, "V9", guid)
+	if got != want {
+		t.Errorf("got %q, want %q (should prefer populated V9 over empty V10)", got, want)
+	}
+}
+
+func TestV10AccountDir_NewestPopulatedWins(t *testing.T) {
+	guid := "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+	mailDir := t.TempDir()
+
+	// Both have mailboxes; newest wins.
+	mustMkdirAll(t, filepath.Join(mailDir, "V10", guid, "INBOX.mbox"))
+	mustMkdirAll(t, filepath.Join(mailDir, "V9", guid, "INBOX.mbox"))
+
+	got, err := V10AccountDir(mailDir, guid)
+	if err != nil {
+		t.Fatalf("V10AccountDir: %v", err)
+	}
+
+	want := filepath.Join(mailDir, "V10", guid)
+	if got != want {
+		t.Errorf("got %q, want %q (newest populated should win)", got, want)
+	}
+}
