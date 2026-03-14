@@ -304,6 +304,11 @@ func importAutoAccounts(
 			continue
 		}
 
+		if summary.MailboxesTotal == 0 {
+			_, _ = fmt.Fprintf(out, "Skipping %s: no mailboxes found\n", identifier)
+			continue
+		}
+
 		printImportSummary(cmd, ctx, *summary)
 		fmt.Fprintln(out)
 
