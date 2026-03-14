@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,25 +23,6 @@ const fakeClientSecrets = `{
     "redirect_uris": ["http://localhost"]
   }
 }`
-
-// captureStdout runs fn while capturing os.Stdout output.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create pipe: %v", err)
-	}
-	orig := os.Stdout
-	os.Stdout = w
-
-	fn()
-
-	_ = w.Close()
-	os.Stdout = orig
-	out, _ := io.ReadAll(r)
-	_ = r.Close()
-	return string(out)
-}
 
 // TestSyncCmd_DuplicateIdentifierRoutesCorrectly verifies that when
 // Gmail and IMAP sources share the same identifier, the single-arg
@@ -123,10 +103,9 @@ func TestSyncCmd_DuplicateIdentifierRoutesCorrectly(t *testing.T) {
 
 	// Capture stdout: the sync command prints per-source errors
 	// to stdout while the returned error is just the count.
-	var execErr error
-	output := captureStdout(t, func() {
-		execErr = root.Execute()
-	})
+	getOutput := captureStdout(t)
+	execErr := root.Execute()
+	output := getOutput()
 
 	if execErr == nil {
 		t.Fatal("expected error (no credentials/token)")
@@ -349,10 +328,9 @@ func TestSyncFullCmd_OAuthSkipDoesNotBlockIMAP(t *testing.T) {
 	root.SetArgs([]string{"sync-full"})
 
 	// Capture stdout to check skip messages.
-	var execErr error
-	output := captureStdout(t, func() {
-		execErr = root.Execute()
-	})
+	getOutput := captureStdout(t)
+	execErr := root.Execute()
+	output := getOutput()
 
 	// IMAP source should be attempted (and fail due to missing
 	// config), but the command should NOT abort entirely because
@@ -461,10 +439,9 @@ func TestSyncCmd_BrokenOAuthDoesNotBlockIMAP(t *testing.T) {
 			root.AddCommand(testCmd)
 			root.SetArgs([]string{tc.name})
 
-			var execErr error
-			output := captureStdout(t, func() {
-				execErr = root.Execute()
-			})
+			getOutput := captureStdout(t)
+			execErr := root.Execute()
+			output := getOutput()
 
 			if execErr == nil {
 				t.Fatal("expected error")

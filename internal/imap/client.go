@@ -849,7 +849,8 @@ func (c *Client) TrashMessage(ctx context.Context, messageID string) error {
 	})
 }
 
-// DeleteMessage permanently deletes a message using UID STORE \Deleted + UID EXPUNGE.
+// DeleteMessage permanently deletes a message using UID STORE \Deleted
+// followed by UID EXPUNGE (UIDPLUS) or plain EXPUNGE as a fallback.
 func (c *Client) DeleteMessage(ctx context.Context, messageID string) error {
 	mailbox, uid, err := parseCompositeID(messageID)
 	if err != nil {
@@ -868,8 +869,14 @@ func (c *Client) DeleteMessage(ctx context.Context, messageID string) error {
 		}, nil).Close(); err != nil {
 			return fmt.Errorf("UID STORE \\Deleted: %w", err)
 		}
-		if err := conn.UIDExpunge(uidSet).Close(); err != nil {
-			return fmt.Errorf("UID EXPUNGE: %w", err)
+		if conn.Caps().Has(imap.CapUIDPlus) {
+			if err := conn.UIDExpunge(uidSet).Close(); err != nil {
+				return fmt.Errorf("UID EXPUNGE: %w", err)
+			}
+		} else {
+			if err := conn.Expunge().Close(); err != nil {
+				return fmt.Errorf("EXPUNGE: %w", err)
+			}
 		}
 		return nil
 	})
