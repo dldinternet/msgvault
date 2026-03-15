@@ -92,7 +92,10 @@ Examples:
 		// under the identifier from add-account. Filter to Gmail
 		// specifically since the same identifier may exist for
 		// other source types (mbox, imap).
-		source := findGmailSource(s, email)
+		source, err := findGmailSource(s, email)
+		if err != nil {
+			return fmt.Errorf("get source: %w", err)
+		}
 		if source == nil {
 			fmt.Printf("Gmail account %s not found in database.\n", email)
 			fmt.Println("Run 'sync-full' first to populate the archive.")
