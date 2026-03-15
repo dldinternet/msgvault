@@ -425,6 +425,14 @@ func (m *mockReauthorizer) Authorize(ctx context.Context, email string) error {
 	return nil
 }
 
+func (m *mockReauthorizer) AuthorizeManual(ctx context.Context, email string) error {
+	m.authorizeCount++
+	if m.authorizeFn != nil {
+		return m.authorizeFn(ctx, email)
+	}
+	return nil
+}
+
 // fakeTokenSource implements oauth2.TokenSource for tests.
 type fakeTokenSource struct{}
 

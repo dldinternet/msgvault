@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -133,13 +134,33 @@ func shellQuote(s string) string {
 }
 
 // Authorize performs the browser OAuth flow for a new account.
+// It opens the default browser and validates that the authorized
+// account matches the expected email.
 func (m *Manager) Authorize(ctx context.Context, email string) error {
-	token, err := m.browserFlow(ctx)
+	return m.authorize(ctx, email, true)
+}
+
+// AuthorizeManual performs the OAuth flow without opening a browser.
+// It prints the authorization URL with clear account context so the
+// user knows exactly which account to authorize. Used during sync
+// re-auth to prevent accidental account mismatch.
+func (m *Manager) AuthorizeManual(ctx context.Context, email string) error {
+	return m.authorize(ctx, email, false)
+}
+
+func (m *Manager) authorize(
+	ctx context.Context, email string, launchBrowser bool,
+) error {
+	token, err := m.browserFlow(ctx, email, launchBrowser)
 	if err != nil {
 		return err
 	}
 
-	return m.saveToken(email, token, m.config.Scopes)
+	if err := m.saveToken(email, token, m.config.Scopes); err != nil {
+		return err
+	}
+
+	return m.validateTokenEmail(ctx, email)
 }
 
 const (
@@ -166,8 +187,12 @@ func (m *Manager) newCallbackHandler(expectedState string, codeChan chan<- strin
 	}
 }
 
-// browserFlow opens a browser for OAuth authorization.
-func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
+// browserFlow runs the OAuth authorization flow with a local callback server.
+// email is used as login_hint to pre-select the Google account.
+// If launchBrowser is false, the URL is printed without opening a browser.
+func (m *Manager) browserFlow(
+	ctx context.Context, email string, launchBrowser bool,
+) (*oauth2.Token, error) {
 	// Generate random state for CSRF protection
 	stateBytes := make([]byte, 16)
 	if _, err := rand.Read(stateBytes); err != nil {
@@ -191,16 +216,29 @@ func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
 
 	defer func() { _ = server.Shutdown(ctx) }()
 
-	// Generate auth URL
+	// Generate auth URL with login_hint to pre-select account
 	m.config.RedirectURL = "http://localhost:" + redirectPort + callbackPath
-	authURL := m.config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	authOpts := []oauth2.AuthCodeOption{
+		oauth2.AccessTypeOffline,
+		oauth2.ApprovalForce,
+	}
+	if email != "" {
+		authOpts = append(authOpts,
+			oauth2.SetAuthURLParam("login_hint", email))
+	}
+	authURL := m.config.AuthCodeURL(state, authOpts...)
 
-	// Open browser
-	fmt.Printf("Opening browser for authorization...\n")
-	fmt.Printf("If browser doesn't open, visit:\n%s\n\n", authURL)
-
-	if err := openBrowser(authURL); err != nil {
-		m.logger.Warn("failed to open browser", "error", err)
+	if launchBrowser {
+		fmt.Printf("Opening browser for authorization...\n")
+		fmt.Printf("If browser doesn't open, visit:\n%s\n\n", authURL)
+		if err := openBrowser(authURL); err != nil {
+			m.logger.Warn("failed to open browser", "error", err)
+		}
+	} else {
+		fmt.Printf("\n=== Re-authorization required for %s ===\n\n", email)
+		fmt.Printf("Open this URL in your browser and select the account %s:\n\n", email)
+		fmt.Printf("  %s\n\n", authURL)
+		fmt.Printf("Waiting for authorization...\n")
 	}
 
 	// Wait for callback
@@ -212,6 +250,64 @@ func (m *Manager) browserFlow(ctx context.Context) (*oauth2.Token, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// validateTokenEmail verifies that the OAuth token belongs to the expected
+// email by calling the Gmail profile API. If the email doesn't match,
+// the token is deleted and an error is returned.
+func (m *Manager) validateTokenEmail(
+	ctx context.Context, email string,
+) error {
+	tf, err := m.loadTokenFile(email)
+	if err != nil {
+		return fmt.Errorf("load token for validation: %w", err)
+	}
+
+	ts := m.config.TokenSource(ctx, &tf.Token)
+	client := oauth2.NewClient(ctx, ts)
+
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		"https://gmail.googleapis.com/gmail/v1/users/me/profile", nil)
+	if err != nil {
+		return fmt.Errorf("create profile request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		m.logger.Warn("could not validate token email",
+			"email", email, "error", err)
+		return nil // Don't block auth on validation network errors
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		m.logger.Warn("could not validate token email",
+			"email", email, "status", resp.StatusCode,
+			"body", string(body))
+		return nil // Don't block auth on API errors
+	}
+
+	var profile struct {
+		EmailAddress string `json:"emailAddress"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+		m.logger.Warn("could not parse profile for validation",
+			"email", email, "error", err)
+		return nil
+	}
+
+	if !strings.EqualFold(profile.EmailAddress, email) {
+		_ = os.Remove(m.tokenPath(email))
+		return fmt.Errorf(
+			"token mismatch: expected %s but authorized as %s "+
+				"(wrong account selected during authorization — "+
+				"please try again and select %s)",
+			email, profile.EmailAddress, email,
+		)
+	}
+
+	return nil
 }
 
 // tokenFile wraps an OAuth2 token with metadata about the scopes it was

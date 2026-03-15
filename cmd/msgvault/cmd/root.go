@@ -163,6 +163,7 @@ type tokenReauthorizer interface {
 	HasToken(email string) bool
 	DeleteToken(email string) error
 	Authorize(ctx context.Context, email string) error
+	AuthorizeManual(ctx context.Context, email string) error
 }
 
 // getTokenSourceWithReauth tries to get a token source for the given email.
@@ -209,7 +210,9 @@ func getTokenSourceWithReauth(
 		return nil, fmt.Errorf("delete expired token: %w", delErr)
 	}
 
-	if authErr := mgr.Authorize(ctx, email); authErr != nil {
+	// Use manual flow (no browser auto-launch) so the user sees which
+	// account needs authorization and can select the correct one.
+	if authErr := mgr.AuthorizeManual(ctx, email); authErr != nil {
 		return nil, fmt.Errorf("re-authorize %s: %w", email, authErr)
 	}
 
