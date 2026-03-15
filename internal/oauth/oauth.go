@@ -36,11 +36,14 @@ var ScopesDeletion = []string{
 	"https://mail.google.com/",
 }
 
+const defaultProfileURL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+
 // Manager handles OAuth2 token acquisition and storage.
 type Manager struct {
-	config    *oauth2.Config
-	tokensDir string
-	logger    *slog.Logger
+	config     *oauth2.Config
+	tokensDir  string
+	logger     *slog.Logger
+	profileURL string // Gmail profile endpoint; overridden in tests
 }
 
 // NewManager creates an OAuth manager from client secrets.
@@ -275,8 +278,11 @@ func (m *Manager) resolveTokenEmail(
 	ts := m.config.TokenSource(valCtx, token)
 	client := oauth2.NewClient(valCtx, ts)
 
-	req, err := http.NewRequestWithContext(valCtx, "GET",
-		"https://gmail.googleapis.com/gmail/v1/users/me/profile", nil)
+	profileURL := m.profileURL
+	if profileURL == "" {
+		profileURL = defaultProfileURL
+	}
+	req, err := http.NewRequestWithContext(valCtx, "GET", profileURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create profile request: %w", err)
 	}

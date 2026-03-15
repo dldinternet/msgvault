@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -582,17 +583,30 @@ func TestNewCallbackHandler(t *testing.T) {
 	}
 }
 
-// TestTokenSavedUnderOriginalIdentifier verifies that when the canonical
-// Gmail address differs from the user-supplied identifier (e.g. dotted
-// alias), the token is saved under the original identifier — not the
-// canonical one. This is the key invariant enforced by authorize():
-// sameGoogleAccount() accepts the alias, and saveToken() uses the
-// original email.
+// TestTokenSavedUnderOriginalIdentifier verifies that when the Gmail
+// profile API returns a canonical address that differs from the
+// user-supplied identifier (e.g. dotted alias), the token is saved
+// under the original identifier — not the canonical one.
+//
+// This test exercises the same resolveTokenEmail + saveToken path
+// that authorize() uses, with a mock Gmail profile server. If
+// authorize() ever switches to saving under canonicalEmail, this
+// test fails.
 //
 // Regression test: a previous version saved under canonicalEmail,
 // breaking HasToken/TokenSource lookups elsewhere in the app.
 func TestTokenSavedUnderOriginalIdentifier(t *testing.T) {
+	const canonicalEmail = "firstlast@gmail.com"
+
+	// Mock Gmail profile endpoint returning the canonical address.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"emailAddress": %q}`, canonicalEmail)
+	}))
+	defer srv.Close()
+
 	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
 
 	token := &oauth2.Token{
 		AccessToken: "test-access-token",
@@ -600,17 +614,21 @@ func TestTokenSavedUnderOriginalIdentifier(t *testing.T) {
 		Expiry:      time.Now().Add(time.Hour),
 	}
 
-	// Simulate what authorize() does: validate via sameGoogleAccount,
-	// then save under the original identifier.
+	// Run the same logic as authorize(): resolve, then save under
+	// original identifier.
 	inputEmail := "first.last@gmail.com"
-	canonicalEmail := "firstlast@gmail.com"
-
-	if !sameGoogleAccount(inputEmail, canonicalEmail) {
-		t.Fatalf("sameGoogleAccount(%q, %q) = false, want true",
-			inputEmail, canonicalEmail)
+	resolvedEmail, err := mgr.resolveTokenEmail(
+		context.Background(), inputEmail, token,
+	)
+	if err != nil {
+		t.Fatalf("resolveTokenEmail: %v", err)
+	}
+	if resolvedEmail != canonicalEmail {
+		t.Fatalf("resolveTokenEmail = %q, want %q",
+			resolvedEmail, canonicalEmail)
 	}
 
-	// Save under original identifier (the authorize() contract)
+	// authorize() saves under the original identifier, NOT canonical
 	if err := mgr.saveToken(inputEmail, token, Scopes); err != nil {
 		t.Fatalf("saveToken: %v", err)
 	}
@@ -626,7 +644,37 @@ func TestTokenSavedUnderOriginalIdentifier(t *testing.T) {
 
 	// Token must NOT exist under the canonical email
 	if _, err := mgr.loadToken(canonicalEmail); err == nil {
-		t.Errorf("token should NOT exist under canonical %q", canonicalEmail)
+		t.Errorf("token should NOT exist under canonical %q",
+			canonicalEmail)
+	}
+}
+
+// TestResolveTokenEmail_RejectsMismatch verifies that resolveTokenEmail
+// rejects tokens where the profile email is for a different account.
+func TestResolveTokenEmail_RejectsMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"emailAddress": "wrong@gmail.com"}`)
+	}))
+	defer srv.Close()
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+
+	token := &oauth2.Token{
+		AccessToken: "test",
+		TokenType:   "Bearer",
+		Expiry:      time.Now().Add(time.Hour),
+	}
+
+	_, err := mgr.resolveTokenEmail(
+		context.Background(), "expected@gmail.com", token,
+	)
+	if err == nil {
+		t.Fatal("expected error for mismatched email")
+	}
+	if !strings.Contains(err.Error(), "token mismatch") {
+		t.Errorf("error should contain 'token mismatch': %q", err.Error())
 	}
 }
 
