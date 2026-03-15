@@ -352,6 +352,7 @@ func (m *Manager) resolveTokenEmail(
 // same Google account. This covers the common alias cases:
 //   - exact match (case-insensitive)
 //   - gmail.com dot-insensitive (first.last@gmail.com == firstlast@gmail.com)
+//   - gmail.com plus-address (user+tag@gmail.com == user@gmail.com)
 //   - googlemail.com ↔ gmail.com equivalence
 //
 // For Google Workspace domains we cannot verify aliases without an
@@ -369,9 +370,9 @@ func sameGoogleAccount(expected, canonical string) bool {
 }
 
 // normalizeGmailAddress returns a canonical form of a gmail.com or
-// googlemail.com address by lowercasing, removing dots from the local
-// part, and mapping googlemail.com → gmail.com. Returns "" for
-// non-Gmail addresses.
+// googlemail.com address by lowercasing, stripping +suffixes and dots
+// from the local part, and mapping googlemail.com → gmail.com.
+// Returns "" for non-Gmail addresses.
 func normalizeGmailAddress(email string) string {
 	at := strings.LastIndex(email, "@")
 	if at < 0 {
@@ -384,7 +385,10 @@ func normalizeGmailAddress(email string) string {
 		return ""
 	}
 
-	// Gmail ignores dots in the local part
+	// Gmail ignores dots and +suffixes in the local part
+	if plus := strings.Index(local, "+"); plus >= 0 {
+		local = local[:plus]
+	}
 	local = strings.ReplaceAll(local, ".", "")
 	return local + "@gmail.com"
 }
