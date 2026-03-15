@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -322,9 +323,14 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 	dbPath := cfg.DatabaseDSN()
 	analyticsDir := cfg.AnalyticsDir()
 	if needsBuild, reason := cacheNeedsBuild(dbPath, analyticsDir); needsBuild {
+		// Deletions require a full rebuild because incremental builds
+		// only export rows with id > lastMessageID and cannot update
+		// or remove existing rows in parquet shards.
+		fullRebuild := strings.Contains(reason, "deletions")
 		logger.Info("rebuilding cache after sync",
-			"email", email, "reason", reason)
-		result, err := buildCache(dbPath, analyticsDir, false)
+			"email", email, "reason", reason,
+			"full_rebuild", fullRebuild)
+		result, err := buildCache(dbPath, analyticsDir, fullRebuild)
 		if err != nil {
 			logger.Error("cache build failed", "error", err)
 			// Don't fail the sync for cache build errors
