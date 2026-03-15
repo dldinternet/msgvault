@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/wesm/msgvault/internal/fileutil"
 	"golang.org/x/oauth2"
@@ -156,11 +157,14 @@ func (m *Manager) authorize(
 		return err
 	}
 
-	if err := m.saveToken(email, token, m.config.Scopes); err != nil {
+	// Validate the token belongs to the expected account before
+	// persisting it. This prevents token pollution where selecting
+	// the wrong Google account would overwrite a valid token file.
+	if err := m.validateTokenEmail(ctx, email, token); err != nil {
 		return err
 	}
 
-	return m.validateTokenEmail(ctx, email)
+	return m.saveToken(email, token, m.config.Scopes)
 }
 
 const (
@@ -252,21 +256,22 @@ func (m *Manager) browserFlow(
 	}
 }
 
-// validateTokenEmail verifies that the OAuth token belongs to the expected
-// email by calling the Gmail profile API. If the email doesn't match,
-// the token is deleted and an error is returned.
+const validateTimeout = 10 * time.Second
+
+// validateTokenEmail verifies that the OAuth token belongs to the
+// expected email by calling the Gmail profile API. The token is
+// validated before being persisted, so a mismatch or validation
+// failure never overwrites an existing token file.
 func (m *Manager) validateTokenEmail(
-	ctx context.Context, email string,
+	ctx context.Context, email string, token *oauth2.Token,
 ) error {
-	tf, err := m.loadTokenFile(email)
-	if err != nil {
-		return fmt.Errorf("load token for validation: %w", err)
-	}
+	valCtx, cancel := context.WithTimeout(ctx, validateTimeout)
+	defer cancel()
 
-	ts := m.config.TokenSource(ctx, &tf.Token)
-	client := oauth2.NewClient(ctx, ts)
+	ts := m.config.TokenSource(valCtx, token)
+	client := oauth2.NewClient(valCtx, ts)
 
-	req, err := http.NewRequestWithContext(ctx, "GET",
+	req, err := http.NewRequestWithContext(valCtx, "GET",
 		"https://gmail.googleapis.com/gmail/v1/users/me/profile", nil)
 	if err != nil {
 		return fmt.Errorf("create profile request: %w", err)
@@ -274,31 +279,32 @@ func (m *Manager) validateTokenEmail(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		m.logger.Warn("could not validate token email",
-			"email", email, "error", err)
-		return nil // Don't block auth on validation network errors
+		return fmt.Errorf(
+			"could not verify token belongs to %s: %w "+
+				"(re-run the command to try again)", email, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		m.logger.Warn("could not validate token email",
-			"email", email, "status", resp.StatusCode,
-			"body", string(body))
-		return nil // Don't block auth on API errors
+		return fmt.Errorf(
+			"could not verify token belongs to %s: "+
+				"Gmail API returned HTTP %d: %s "+
+				"(re-run the command to try again)",
+			email, resp.StatusCode, string(body))
 	}
 
 	var profile struct {
 		EmailAddress string `json:"emailAddress"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-		m.logger.Warn("could not parse profile for validation",
-			"email", email, "error", err)
-		return nil
+		return fmt.Errorf(
+			"could not verify token belongs to %s: "+
+				"failed to parse profile response: %w "+
+				"(re-run the command to try again)", email, err)
 	}
 
 	if !strings.EqualFold(profile.EmailAddress, email) {
-		_ = os.Remove(m.tokenPath(email))
 		return fmt.Errorf(
 			"token mismatch: expected %s but authorized as %s "+
 				"(wrong account selected during authorization — "+
