@@ -160,21 +160,13 @@ func (m *Manager) authorize(
 	// Validate the token belongs to the expected account before
 	// persisting it. This prevents token pollution where selecting
 	// the wrong Google account would overwrite a valid token file.
-	canonicalEmail, err := m.resolveTokenEmail(ctx, email, token)
-	if err != nil {
+	// The token is always saved under the original identifier (email)
+	// since that's the key used for all lookups elsewhere in the app.
+	if _, err := m.resolveTokenEmail(ctx, email, token); err != nil {
 		return err
 	}
 
-	if err := m.saveToken(canonicalEmail, token, m.config.Scopes); err != nil {
-		return err
-	}
-
-	if canonicalEmail != email {
-		fmt.Printf("Note: Google canonical address is %s "+
-			"(saving token under this address)\n", canonicalEmail)
-	}
-
-	return nil
+	return m.saveToken(email, token, m.config.Scopes)
 }
 
 const (
