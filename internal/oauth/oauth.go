@@ -323,17 +323,27 @@ func (m *Manager) resolveTokenEmail(
 				"(re-run the command to try again)", email, err)
 	}
 
-	// Accept the token if the profile email matches the expected
-	// email (case-insensitive) or shares the same Google domain
-	// (alias). Reject if the emails are for entirely different
-	// accounts.
 	if !sameGoogleAccount(email, profile.EmailAddress) {
-		return "", fmt.Errorf(
-			"token mismatch: expected %s but authorized as %s "+
-				"(wrong account selected during authorization — "+
-				"please try again and select %s)",
-			email, profile.EmailAddress, email,
-		)
+		// For Workspace domains, the profile may return the
+		// primary address when the user added an alias. We
+		// can't verify aliases without admin API access, so
+		// accept same-domain mismatches with a warning.
+		if sameWorkspaceDomain(email, profile.EmailAddress) {
+			m.logger.Warn(
+				"profile email differs from expected "+
+					"(possible Workspace alias)",
+				"expected", email,
+				"profile", profile.EmailAddress,
+			)
+		} else {
+			return "", fmt.Errorf(
+				"token mismatch: expected %s but authorized "+
+					"as %s (wrong account selected during "+
+					"authorization — please try again and "+
+					"select %s)",
+				email, profile.EmailAddress, email,
+			)
+		}
 	}
 
 	return profile.EmailAddress, nil
@@ -357,6 +367,25 @@ func sameGoogleAccount(expected, canonical string) bool {
 	canonicalNorm := normalizeGmailAddress(canonical)
 
 	return expectedNorm != "" && expectedNorm == canonicalNorm
+}
+
+// sameWorkspaceDomain returns true if two email addresses share the
+// same non-Gmail domain (case-insensitive). Returns false for
+// gmail.com and googlemail.com since those aliases are fully handled
+// by sameGoogleAccount/normalizeGmailAddress.
+func sameWorkspaceDomain(a, b string) bool {
+	ai := strings.LastIndex(a, "@")
+	bi := strings.LastIndex(b, "@")
+	if ai < 0 || bi < 0 {
+		return false
+	}
+	domA := strings.ToLower(a[ai+1:])
+	domB := strings.ToLower(b[bi+1:])
+	if domA != domB {
+		return false
+	}
+	// Gmail aliases are handled by sameGoogleAccount
+	return domA != "gmail.com" && domA != "googlemail.com"
 }
 
 // normalizeGmailAddress returns a canonical form of a gmail.com or

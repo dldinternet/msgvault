@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +28,7 @@ func setupTestManager(t *testing.T, scopes []string) *Manager {
 	return &Manager{
 		config:    &oauth2.Config{Scopes: scopes},
 		tokensDir: tokensDir,
+		logger:    slog.Default(),
 	}
 }
 
@@ -674,6 +676,106 @@ func TestAuthorize_RejectsMismatch(t *testing.T) {
 	// No token should have been saved.
 	if _, loadErr := mgr.loadToken("expected@gmail.com"); loadErr == nil {
 		t.Error("token should NOT be saved after mismatch rejection")
+	}
+}
+
+// TestAuthorize_WorkspaceAlias verifies that a Workspace alias
+// (different local part, same domain) is accepted with a warning
+// rather than hard-rejected.
+func TestAuthorize_WorkspaceAlias(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"emailAddress": "primary@company.com"}`)
+		}))
+	defer srv.Close()
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+	mgr.browserFlowFn = func(
+		_ context.Context, _ string, _ bool,
+	) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken: "ws-token",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	// alias@company.com -> profile returns primary@company.com
+	err := mgr.Authorize(context.Background(), "alias@company.com")
+	if err != nil {
+		t.Fatalf("Authorize should accept same-domain alias: %v", err)
+	}
+
+	// Token saved under the original alias identifier.
+	loaded, err := mgr.loadToken("alias@company.com")
+	if err != nil {
+		t.Fatalf("loadToken failed: %v", err)
+	}
+	if loaded.AccessToken != "ws-token" {
+		t.Errorf("wrong access token: got %q", loaded.AccessToken)
+	}
+}
+
+// TestAuthorize_CrossDomainReject verifies that entirely different
+// domains are rejected even for Workspace accounts.
+func TestAuthorize_CrossDomainReject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w,
+				`{"emailAddress": "user@other.com"}`)
+		}))
+	defer srv.Close()
+
+	mgr := setupTestManager(t, Scopes)
+	mgr.profileURL = srv.URL
+	mgr.browserFlowFn = func(
+		_ context.Context, _ string, _ bool,
+	) (*oauth2.Token, error) {
+		return &oauth2.Token{
+			AccessToken: "test",
+			TokenType:   "Bearer",
+			Expiry:      time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	err := mgr.Authorize(context.Background(), "user@company.com")
+	if err == nil {
+		t.Fatal("expected error for cross-domain mismatch")
+	}
+	if !strings.Contains(err.Error(), "token mismatch") {
+		t.Errorf("error should contain 'token mismatch': %q",
+			err.Error())
+	}
+}
+
+func TestSameWorkspaceDomain(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"user@company.com", "admin@company.com", true},
+		{"user@Company.Com", "admin@company.com", true},
+		{"user@company.com", "user@other.com", false},
+		{"user@gmail.com", "other@gmail.com", false},
+		{"user@googlemail.com", "other@googlemail.com", false},
+		{"noat", "user@gmail.com", false},
+		{"user@gmail.com", "noat", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
+			t.Parallel()
+			got := sameWorkspaceDomain(tt.a, tt.b)
+			if got != tt.want {
+				t.Errorf(
+					"sameWorkspaceDomain(%q, %q) = %v, want %v",
+					tt.a, tt.b, got, tt.want)
+			}
+		})
 	}
 }
 
