@@ -1254,6 +1254,138 @@ func TestOAuthConfig_HasAnyConfig(t *testing.T) {
 	}
 }
 
+func TestLoadWithNamedOAuthApps(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	configContent := `
+[oauth]
+client_secrets = "~/secrets/default.json"
+
+[oauth.apps.acme]
+client_secrets = "~/secrets/acme.json"
+
+[oauth.apps.personal]
+client_secrets = "/absolute/personal.json"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	cfg, err := Load("", "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	// Default should be expanded
+	expectedDefault := filepath.Join(home, "secrets/default.json")
+	if cfg.OAuth.ClientSecrets != expectedDefault {
+		t.Errorf("ClientSecrets = %q, want %q", cfg.OAuth.ClientSecrets, expectedDefault)
+	}
+
+	// Named apps should be expanded
+	expectedAcme := filepath.Join(home, "secrets/acme.json")
+	acme, ok := cfg.OAuth.Apps["acme"]
+	if !ok {
+		t.Fatal("Apps[acme] not found")
+	}
+	if acme.ClientSecrets != expectedAcme {
+		t.Errorf("Apps[acme].ClientSecrets = %q, want %q", acme.ClientSecrets, expectedAcme)
+	}
+
+	// Absolute paths should be unchanged
+	personal, ok := cfg.OAuth.Apps["personal"]
+	if !ok {
+		t.Fatal("Apps[personal] not found")
+	}
+	if personal.ClientSecrets != "/absolute/personal.json" {
+		t.Errorf("Apps[personal].ClientSecrets = %q, want /absolute/personal.json", personal.ClientSecrets)
+	}
+
+	// HasAnyConfig should be true
+	if !cfg.OAuth.HasAnyConfig() {
+		t.Error("HasAnyConfig() = false, want true")
+	}
+}
+
+func TestLoadWithNamedOAuthApps_RelativePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	configContent := `
+[oauth.apps.acme]
+client_secrets = "secrets/acme.json"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	// Use explicit --config so relative paths resolve against config dir
+	cfg, err := Load(configPath, "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	expectedAcme := filepath.Join(tmpDir, "secrets/acme.json")
+	acme, ok := cfg.OAuth.Apps["acme"]
+	if !ok {
+		t.Fatal("Apps[acme] not found")
+	}
+	if acme.ClientSecrets != expectedAcme {
+		t.Errorf("Apps[acme].ClientSecrets = %q, want %q", acme.ClientSecrets, expectedAcme)
+	}
+}
+
+func TestLoadNamedAppsOnly_NoDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("MSGVAULT_HOME", tmpDir)
+
+	configContent := `
+[oauth.apps.acme]
+client_secrets = "/path/to/acme.json"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	cfg, err := Load("", "")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Default should be empty
+	if cfg.OAuth.ClientSecrets != "" {
+		t.Errorf("ClientSecrets = %q, want empty", cfg.OAuth.ClientSecrets)
+	}
+
+	// HasAnyConfig should still be true
+	if !cfg.OAuth.HasAnyConfig() {
+		t.Error("HasAnyConfig() = false, want true")
+	}
+
+	// ClientSecretsFor("") should fail
+	_, err = cfg.OAuth.ClientSecretsFor("")
+	if err == nil {
+		t.Error("ClientSecretsFor(\"\") should error with no default")
+	}
+
+	// ClientSecretsFor("acme") should work
+	path, err := cfg.OAuth.ClientSecretsFor("acme")
+	if err != nil {
+		t.Errorf("ClientSecretsFor(acme) error = %v", err)
+	}
+	if path != "/path/to/acme.json" {
+		t.Errorf("ClientSecretsFor(acme) = %q, want /path/to/acme.json", path)
+	}
+}
+
 func TestSave_AllowInsecureRoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 
