@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	imapclient "github.com/wesm/msgvault/internal/imap"
 	"github.com/wesm/msgvault/internal/store"
@@ -64,16 +65,36 @@ Examples:
 			Username: imapUsername,
 		}
 
-		// Read password: use masked interactive prompt when stdin is a
-		// terminal, or read from piped stdin for scripting.
+		// Read password using the best method for the terminal:
+		//  - huh masked input when both stdin and stdout are terminals
+		//  - term.ReadPassword when stdin is a terminal but stdout is
+		//    redirected (avoids TUI escape sequences in output)
+		//  - plain pipe read when stdin is not a terminal
 		var (
 			password string
 			err      error
 		)
 		prompt := fmt.Sprintf("Password for %s@%s:", imapUsername, imapHost)
-		if term.IsTerminal(int(os.Stdin.Fd())) {
+		stdinTTY := isatty.IsTerminal(os.Stdin.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		stdoutTTY := isatty.IsTerminal(os.Stdout.Fd()) ||
+			isatty.IsCygwinTerminal(os.Stdout.Fd())
+
+		switch {
+		case stdinTTY && stdoutTTY:
 			password, err = readPasswordInteractive(prompt)
-		} else {
+		case stdinTTY:
+			fmt.Fprintf(os.Stderr, "%s ", prompt)
+			raw, readErr := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if readErr != nil {
+				err = fmt.Errorf("read password: %w", readErr)
+			} else if strings.TrimSpace(string(raw)) == "" {
+				err = fmt.Errorf("password is required")
+			} else {
+				password = string(raw)
+			}
+		default:
 			password, err = readPasswordFromPipe(os.Stdin)
 		}
 		if err != nil {
