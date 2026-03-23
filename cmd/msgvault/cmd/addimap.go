@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 	imapclient "github.com/wesm/msgvault/internal/imap"
 	"github.com/wesm/msgvault/internal/store"
@@ -28,6 +32,8 @@ Use --starttls for STARTTLS upgrade on port 143.
 Use --no-tls for a plain unencrypted connection (not recommended).
 
 You will be prompted to enter your password interactively.
+You can also pipe a password via stdin for scripting:
+  echo "password" | msgvault add-imap --host ... --username ...
 
 Security note: Your password is stored on disk with restricted file
 permissions (0600). For stronger security, use an app-specific password
@@ -58,17 +64,20 @@ Examples:
 			Username: imapUsername,
 		}
 
-		// Get password via secure interactive prompt only (never via flag to
-		// avoid exposure in shell history and process listings).
-		fmt.Printf("Password for %s@%s: ", imapUsername, imapHost)
-		raw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
-		if err != nil {
-			return fmt.Errorf("read password: %w", err)
+		// Read password: use masked interactive prompt when stdin is a
+		// terminal, or read from piped stdin for scripting.
+		var (
+			password string
+			err      error
+		)
+		prompt := fmt.Sprintf("Password for %s@%s:", imapUsername, imapHost)
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			password, err = readPasswordInteractive(prompt)
+		} else {
+			password, err = readPasswordFromPipe(os.Stdin)
 		}
-		password := string(raw)
-		if password == "" {
-			return fmt.Errorf("password is required")
+		if err != nil {
+			return err
 		}
 
 		// Test connection
@@ -129,6 +138,41 @@ Examples:
 
 		return nil
 	},
+}
+
+// readPasswordFromPipe reads a password from a non-terminal reader
+// (e.g. piped stdin). Uses only the first line.
+func readPasswordFromPipe(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", fmt.Errorf("read password: %w", err)
+		}
+		return "", fmt.Errorf("password is required")
+	}
+	password := strings.TrimRight(scanner.Text(), "\r\n")
+	if strings.TrimSpace(password) == "" {
+		return "", fmt.Errorf("password is required")
+	}
+	return password, nil
+}
+
+// readPasswordInteractive prompts for a password using a masked
+// input field with asterisk echo.
+func readPasswordInteractive(prompt string) (string, error) {
+	var password string
+	err := huh.NewInput().
+		Title(prompt).
+		EchoMode(huh.EchoModePassword).
+		Value(&password).
+		Run()
+	if err != nil {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	if strings.TrimSpace(password) == "" {
+		return "", fmt.Errorf("password is required")
+	}
+	return password, nil
 }
 
 func init() {
