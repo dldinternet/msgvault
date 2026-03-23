@@ -66,24 +66,35 @@ Examples:
 		}
 
 		// Read password using the best method for the terminal:
-		//  - huh masked input when both stdin and stdout are terminals
-		//  - term.ReadPassword when stdin is a terminal but stdout is
-		//    redirected (avoids TUI escape sequences in output)
+		//  - huh masked input when stdin is a terminal (output goes
+		//    to stdout when available, stderr when stdout is
+		//    redirected)
+		//  - term.ReadPassword as fallback when stdin is a native
+		//    terminal but huh output is unavailable (does not work
+		//    on Cygwin/mintty PTYs)
 		//  - plain pipe read when stdin is not a terminal
 		var (
 			password string
 			err      error
 		)
 		prompt := fmt.Sprintf("Password for %s@%s:", imapUsername, imapHost)
-		stdinTTY := isatty.IsTerminal(os.Stdin.Fd()) ||
-			isatty.IsCygwinTerminal(os.Stdin.Fd())
+		nativeTTY := isatty.IsTerminal(os.Stdin.Fd())
+		cygwinTTY := isatty.IsCygwinTerminal(os.Stdin.Fd())
+		stdinTTY := nativeTTY || cygwinTTY
 		stdoutTTY := isatty.IsTerminal(os.Stdout.Fd()) ||
 			isatty.IsCygwinTerminal(os.Stdout.Fd())
 
 		switch {
 		case stdinTTY && stdoutTTY:
-			password, err = readPasswordInteractive(prompt)
-		case stdinTTY:
+			password, err = readPasswordInteractive(prompt, os.Stdout)
+		case stdinTTY && cygwinTTY:
+			// Cygwin/mintty: term.ReadPassword doesn't work on
+			// these PTYs, so use huh with output on stderr.
+			password, err = readPasswordInteractive(prompt, os.Stderr)
+		case nativeTTY:
+			// Native terminal with stdout redirected: use
+			// term.ReadPassword to avoid TUI escape sequences in
+			// the redirected stream.
 			fmt.Fprintf(os.Stderr, "%s ", prompt)
 			raw, readErr := term.ReadPassword(int(os.Stdin.Fd()))
 			fmt.Fprintln(os.Stderr)
@@ -179,13 +190,17 @@ func readPasswordFromPipe(r io.Reader) (string, error) {
 }
 
 // readPasswordInteractive prompts for a password using a masked
-// input field with asterisk echo.
-func readPasswordInteractive(prompt string) (string, error) {
+// input field with asterisk echo. The output writer controls where
+// the TUI renders (stdout for normal use, stderr when stdout is
+// redirected).
+func readPasswordInteractive(prompt string, output io.Writer) (string, error) {
 	var password string
-	err := huh.NewInput().
+	input := huh.NewInput().
 		Title(prompt).
 		EchoMode(huh.EchoModePassword).
-		Value(&password).
+		Value(&password)
+	err := huh.NewForm(huh.NewGroup(input)).
+		WithOutput(output).
 		Run()
 	if err != nil {
 		return "", fmt.Errorf("read password: %w", err)
