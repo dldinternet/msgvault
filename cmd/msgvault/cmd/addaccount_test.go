@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -186,6 +187,92 @@ func TestAddAccount_RebindPreservesTokenOnFailure(t *testing.T) {
 			"oauth_app = %v, want old-app "+
 				"(binding should not change on auth failure)",
 			src.OAuthApp,
+		)
+	}
+}
+
+// TestAddAccount_HeadlessExplicitEmptyOAuthApp verifies that
+// --headless --oauth-app "" does not re-inherit the stored binding.
+func TestAddAccount_HeadlessExplicitEmptyOAuthApp(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "msgvault.db")
+
+	// Set up DB with a source bound to "acme"
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := s.InitSchema(); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	source, err := s.GetOrCreateSource("gmail", "user@acme.com")
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	err = s.UpdateSourceOAuthApp(source.ID, sql.NullString{
+		String: "acme", Valid: true,
+	})
+	if err != nil {
+		t.Fatalf("set oauth_app: %v", err)
+	}
+	_ = s.Close()
+
+	// Save/restore globals
+	savedCfg := cfg
+	savedLogger := logger
+	savedHeadless := headless
+	savedOAuthApp := oauthAppName
+	savedForce := forceReauth
+	defer func() {
+		cfg = savedCfg
+		logger = savedLogger
+		headless = savedHeadless
+		oauthAppName = savedOAuthApp
+		forceReauth = savedForce
+	}()
+
+	cfg = &config.Config{
+		HomeDir: tmpDir,
+		Data:    config.DataConfig{DataDir: tmpDir},
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// The RunE reads package-level flag vars, but uses
+	// cmd.Flags().Changed() to detect explicit --oauth-app.
+	// We need to register the flags on the test command so
+	// Changed() works, and bind them to the package-level vars.
+	testCmd := &cobra.Command{
+		Use:  "add-account <email>",
+		Args: cobra.ExactArgs(1),
+		RunE: addAccountCmd.RunE,
+	}
+	testCmd.Flags().StringVar(&oauthAppName, "oauth-app", "", "")
+	testCmd.Flags().BoolVar(&headless, "headless", false, "")
+	testCmd.Flags().BoolVar(&forceReauth, "force", false, "")
+	testCmd.Flags().StringVar(&accountDisplayName, "display-name", "", "")
+
+	root := newTestRootCmd()
+	root.AddCommand(testCmd)
+	root.SetArgs([]string{
+		"add-account", "user@acme.com",
+		"--headless", "--oauth-app", "",
+	})
+
+	getOutput := captureStdout(t)
+	err = root.Execute()
+	output := getOutput()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The output should NOT contain --oauth-app acme since we
+	// explicitly passed an empty --oauth-app to clear to default.
+	if strings.Contains(output, "--oauth-app") {
+		t.Errorf(
+			"explicit empty --oauth-app should not inherit stored "+
+				"binding; output contains --oauth-app:\n%s",
+			output,
 		)
 	}
 }
