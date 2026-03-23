@@ -2,9 +2,115 @@ package cmd
 
 import (
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestPasswordPromptStrategy(t *testing.T) {
+	tests := []struct {
+		name       string
+		stdinNat   bool // stdin is a native terminal
+		stdinCyg   bool // stdin is a Cygwin/MSYS PTY
+		stderrTTY  bool
+		stdoutTTY  bool
+		wantMethod passwordMethod
+		wantOutput *os.File // nil for pipe/error methods
+	}{
+		{
+			name:       "normal interactive terminal",
+			stdinNat:   true,
+			stderrTTY:  true,
+			stdoutTTY:  true,
+			wantMethod: passwordInteractive,
+			wantOutput: os.Stderr,
+		},
+		{
+			name:       "stdout redirected",
+			stdinNat:   true,
+			stderrTTY:  true,
+			stdoutTTY:  false,
+			wantMethod: passwordInteractive,
+			wantOutput: os.Stderr,
+		},
+		{
+			name:       "stderr redirected",
+			stdinNat:   true,
+			stderrTTY:  false,
+			stdoutTTY:  true,
+			wantMethod: passwordInteractive,
+			wantOutput: os.Stdout,
+		},
+		{
+			name:       "both outputs redirected, native stdin",
+			stdinNat:   true,
+			stderrTTY:  false,
+			stdoutTTY:  false,
+			wantMethod: passwordNoPrompt,
+		},
+		{
+			name:       "cygwin normal terminal",
+			stdinCyg:   true,
+			stderrTTY:  true,
+			stdoutTTY:  true,
+			wantMethod: passwordInteractive,
+			wantOutput: os.Stderr,
+		},
+		{
+			name:       "cygwin stdout redirected",
+			stdinCyg:   true,
+			stderrTTY:  true,
+			stdoutTTY:  false,
+			wantMethod: passwordInteractive,
+			wantOutput: os.Stderr,
+		},
+		{
+			name:       "cygwin stderr redirected",
+			stdinCyg:   true,
+			stderrTTY:  false,
+			stdoutTTY:  true,
+			wantMethod: passwordInteractive,
+			wantOutput: os.Stdout,
+		},
+		{
+			name:       "cygwin both outputs redirected",
+			stdinCyg:   true,
+			stderrTTY:  false,
+			stdoutTTY:  false,
+			wantMethod: passwordNoPrompt,
+		},
+		{
+			name:       "piped stdin",
+			stdinNat:   false,
+			stdinCyg:   false,
+			stderrTTY:  true,
+			stdoutTTY:  true,
+			wantMethod: passwordPipe,
+		},
+		{
+			name:       "piped stdin, all redirected",
+			stdinNat:   false,
+			stdinCyg:   false,
+			stderrTTY:  false,
+			stdoutTTY:  false,
+			wantMethod: passwordPipe,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			method, output := choosePasswordStrategy(
+				tt.stdinNat, tt.stdinCyg, tt.stderrTTY, tt.stdoutTTY,
+			)
+			if method != tt.wantMethod {
+				t.Errorf("method = %v, want %v", method, tt.wantMethod)
+			}
+			if output != tt.wantOutput {
+				t.Errorf("output = %v, want %v", output, tt.wantOutput)
+			}
+		})
+	}
+}
 
 func TestReadPasswordFromPipe(t *testing.T) {
 	tests := []struct {
