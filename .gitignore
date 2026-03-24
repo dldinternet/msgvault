@@ -42,3 +42,6 @@ __pycache__/
 
 # Claude Code
 .claude/
+
+# NWave
+.nwave/
