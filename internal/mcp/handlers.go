@@ -448,6 +448,10 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 const maxStageDeletionResults = 100000
 
 func (h *handlers) stageDeletion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if h.dataDir == "" {
+		return mcp.NewToolResultError("deletion staging is not available in remote mode"), nil
+	}
+
 	args := req.GetArguments()
 
 	// Look up account filter

@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/wesm/msgvault/internal/export"
 	"github.com/wesm/msgvault/internal/query"
 	"github.com/wesm/msgvault/internal/query/querytest"
+	"github.com/wesm/msgvault/internal/remote"
 	"github.com/wesm/msgvault/internal/testutil"
 )
 
@@ -1045,4 +1048,113 @@ func TestStageDeletion(t *testing.T) {
 				maxStageDeletionResults, capturedFilter.Pagination.Limit)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Remote mode tests
+// ---------------------------------------------------------------------------
+
+func TestStageDeletion_RemoteModeGuard(t *testing.T) {
+	eng := &querytest.MockEngine{}
+	h := &handlers{engine: eng, dataDir: ""}
+
+	r := runToolExpectError(t, "stage_deletion", h.stageDeletion, map[string]any{
+		"from": "test@example.com",
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "remote mode") {
+		t.Fatalf("expected error mentioning 'remote mode', got: %s", txt)
+	}
+}
+
+func TestRemoteMode_GetAttachmentError(t *testing.T) {
+	remoteEng := newMockRemoteEngine(t)
+	h := &handlers{engine: remoteEng, attachmentsDir: ""}
+
+	r := runToolExpectError(t, "get_attachment", h.getAttachment, map[string]any{
+		"attachment_id": float64(1),
+	})
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "not supported in remote mode") {
+		t.Fatalf("expected error mentioning 'not supported in remote mode', got: %s", txt)
+	}
+}
+
+func TestRemoteMode_SearchMessages(t *testing.T) {
+	remoteEng := newMockRemoteEngine(t)
+	h := &handlers{engine: remoteEng}
+
+	// search_messages should work through remote engine
+	r := callToolDirect(t, "search_messages", h.searchMessages, map[string]any{
+		"query": "from:alice",
+	})
+	if r.IsError {
+		t.Fatalf("unexpected error: %s", resultText(t, r))
+	}
+	txt := resultText(t, r)
+	if !strings.Contains(txt, "alice@example.com") {
+		t.Fatalf("expected search result with alice@example.com, got: %s", txt)
+	}
+}
+
+func TestRemoteMode_EngineCleanup(t *testing.T) {
+	remoteEng := newMockRemoteEngine(t)
+	if err := remoteEng.Close(); err != nil {
+		t.Fatalf("remote engine cleanup failed: %v", err)
+	}
+}
+
+// newMockRemoteEngine creates a remote.Engine backed by a mock HTTP server
+// that implements the minimum API surface needed for MCP handler tests.
+func newMockRemoteEngine(t *testing.T) *remote.Engine {
+	t.Helper()
+	mux := http.NewServeMux()
+
+	// /api/v1/accounts — needed by getAccountID
+	mux.HandleFunc("/api/v1/accounts", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"accounts": []map[string]string{
+				{"email": "test@example.com"},
+			},
+		})
+	})
+
+	// /api/v1/search/fast — needed by search_messages
+	mux.HandleFunc("/api/v1/search/fast", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"query":       r.URL.Query().Get("q"),
+			"total_count": 1,
+			"messages": []map[string]any{
+				{
+					"id":      1,
+					"subject": "Test Message",
+					"from":    "alice@example.com",
+					"to":      []string{"bob@example.com"},
+					"sent_at": "2024-01-01T00:00:00Z",
+					"snippet": "Hello",
+					"labels":  []string{"INBOX"},
+				},
+			},
+		})
+	})
+
+	// /api/v1/stats/total — needed by get_stats
+	mux.HandleFunc("/api/v1/stats/total", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"message_count": 100,
+			"total_size":    1024000,
+		})
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	eng, err := remote.NewEngine(remote.Config{
+		URL:           srv.URL,
+		AllowInsecure: true,
+	})
+	if err != nil {
+		t.Fatalf("create remote engine: %v", err)
+	}
+	return eng
 }
