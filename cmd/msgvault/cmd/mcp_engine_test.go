@@ -25,7 +25,11 @@ func TestResolveMCPEngine_Remote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer result.Cleanup()
+	defer func() {
+		if err := result.Cleanup(); err != nil {
+			t.Errorf("cleanup error: %v", err)
+		}
+	}()
 
 	if !result.IsRemote {
 		t.Fatal("expected IsRemote to be true")
@@ -97,7 +101,11 @@ func TestResolveMCPEngine_Local(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer result.Cleanup()
+	defer func() {
+		if err := result.Cleanup(); err != nil {
+			t.Errorf("cleanup error: %v", err)
+		}
+	}()
 
 	if result.IsRemote {
 		t.Fatal("expected IsRemote to be false")

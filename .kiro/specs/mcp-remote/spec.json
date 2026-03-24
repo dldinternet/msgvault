@@ -1,0 +1,22 @@
+{
+  "name": "mcp-remote",
+  "description": "Add remote mode support to the MCP server so it can connect to a remote msgvault API server (via [remote] config) instead of requiring a local SQLite database. Mirror the existing pattern from the TUI command which already supports remote mode via remote.Engine.",
+  "phase": "tasks-generated",
+  "language": "en",
+  "created": "2026-03-24T16:15:00Z",
+  "updated": "2026-03-24T19:10:00Z",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": false
+    }
+  }
+}

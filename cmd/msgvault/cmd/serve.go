@@ -109,41 +109,85 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		engine = query.NewSQLiteEngine(s.DB())
 	}
-	defer engine.Close()
 
 	// Create OAuth manager
 	oauthMgr, err := oauth.NewManager(cfg.OAuth.ClientSecrets, cfg.TokensDir(), logger)
 	if err != nil {
+		engine.Close()
 		return wrapOAuthError(fmt.Errorf("create oauth manager: %w", err))
 	}
 
-	// Create sync function for the scheduler
+	// Create sync function and scheduler
 	syncFunc := func(ctx context.Context, email string) error {
 		return runScheduledSync(ctx, email, s, oauthMgr)
 	}
-
-	// Create and configure scheduler
 	sched := scheduler.New(syncFunc).WithLogger(logger)
+
+	// Create adapters for the API interfaces
+	storeAdapter := &storeAPIAdapter{store: s}
+	schedAdapter := &schedulerAdapter{scheduler: sched}
+
+	// Create API server before starting the scheduler so the PostBatchFunc
+	// closure can safely reference apiServer without a data race.
+	apiServer := api.NewServerWithOptions(api.ServerOptions{
+		Config:    cfg,
+		Store:     storeAdapter,
+		Engine:    engine,
+		Scheduler: schedAdapter,
+		Logger:    logger,
+	})
 
 	// Rebuild cache after ALL syncs from a batch complete — never during.
 	// DuckDB's sqlite_scanner ATTACHes the SQLite file directly, bypassing
 	// Go's database/sql connection pool. Running it while syncs write causes
 	// corruption. The PostBatchFunc fires only after every running sync has
 	// finished, making it safe to read the DB with DuckDB.
+	//
+	// retiredEngine holds the previously swapped-out engine. We delay closing
+	// it until the next swap so that in-flight HTTP requests using the old
+	// engine can finish. By the next PostBatchFunc call, all prior requests
+	// are guaranteed complete (syncs block between batches).
+	var retiredEngine query.Engine
 	sched.SetPostBatchFunc(func() {
+		// Close any engine retired during the previous swap.
+		if retiredEngine != nil {
+			retiredEngine.Close()
+			retiredEngine = nil
+		}
+
 		dbPath := cfg.DatabaseDSN()
 		analyticsDir := cfg.AnalyticsDir()
-		if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.NeedsBuild {
-			logger.Info("rebuilding cache after sync batch",
-				"reason", staleness.Reason,
-				"full_rebuild", staleness.FullRebuild)
-			result, err := buildCache(dbPath, analyticsDir, staleness.FullRebuild)
-			if err != nil {
-				logger.Error("cache build failed", "error", err)
-			} else if !result.Skipped {
-				logger.Info("cache build completed", "exported", result.ExportedCount)
-			}
+		staleness := cacheNeedsBuild(dbPath, analyticsDir)
+		if !staleness.NeedsBuild {
+			return
 		}
+
+		logger.Info("rebuilding cache after sync batch",
+			"reason", staleness.Reason,
+			"full_rebuild", staleness.FullRebuild)
+		result, err := buildCache(dbPath, analyticsDir, staleness.FullRebuild)
+		if err != nil {
+			logger.Error("cache build failed", "error", err)
+			return
+		}
+		if result.Skipped {
+			return
+		}
+		logger.Info("cache build completed", "exported", result.ExportedCount)
+
+		// Refresh the API server's query engine so it picks up the new
+		// Parquet files. Without this, the DuckDB engine serves stale data
+		// until the daemon is restarted.
+		if !query.HasCompleteParquetData(analyticsDir) {
+			return
+		}
+		newEngine, err := query.NewDuckDBEngine(analyticsDir, dbPath, s.DB())
+		if err != nil {
+			logger.Error("failed to create new DuckDB engine after cache rebuild", "error", err)
+			return
+		}
+		retiredEngine = apiServer.SwapEngine(newEngine)
+		logger.Info("query engine refreshed after cache rebuild")
 	})
 
 	// Add all scheduled accounts
@@ -164,21 +208,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start the scheduler
+	// Start the scheduler after API server is fully constructed
 	sched.Start()
-
-	// Create adapters for the API interfaces
-	storeAdapter := &storeAPIAdapter{store: s}
-	schedAdapter := &schedulerAdapter{scheduler: sched}
-
-	// Create and start API server
-	apiServer := api.NewServerWithOptions(api.ServerOptions{
-		Config:    cfg,
-		Store:     storeAdapter,
-		Engine:    engine,
-		Scheduler: schedAdapter,
-		Logger:    logger,
-	})
 
 	// Start API server in goroutine
 	serverErr := make(chan error, 1)
@@ -235,6 +266,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		fmt.Println("Shutdown complete.")
 	case <-time.After(30 * time.Second):
 		fmt.Println("Shutdown timed out after 30 seconds.")
+	}
+
+	// Close engines: the current one and any retired engine awaiting cleanup.
+	if finalEngine := apiServer.Engine(); finalEngine != nil {
+		finalEngine.Close()
+	}
+	if retiredEngine != nil {
+		retiredEngine.Close()
 	}
 
 	return nil

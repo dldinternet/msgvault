@@ -1112,7 +1112,7 @@ func newMockRemoteEngine(t *testing.T) *remote.Engine {
 
 	// /api/v1/accounts — needed by getAccountID
 	mux.HandleFunc("/api/v1/accounts", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"accounts": []map[string]string{
 				{"email": "test@example.com"},
 			},
@@ -1121,7 +1121,7 @@ func newMockRemoteEngine(t *testing.T) *remote.Engine {
 
 	// /api/v1/search/fast — needed by search_messages
 	mux.HandleFunc("/api/v1/search/fast", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"query":       r.URL.Query().Get("q"),
 			"total_count": 1,
 			"messages": []map[string]any{
@@ -1140,7 +1140,7 @@ func newMockRemoteEngine(t *testing.T) *remote.Engine {
 
 	// /api/v1/stats/total — needed by get_stats
 	mux.HandleFunc("/api/v1/stats/total", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"message_count": 100,
 			"total_size":    1024000,
 		})
