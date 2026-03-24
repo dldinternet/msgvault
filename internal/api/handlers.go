@@ -302,8 +302,8 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 
 	// Build source ID lookup from the engine (database sources table).
 	sourceIDs := make(map[string]int64)
-	if s.engine != nil {
-		if engineAccounts, err := s.engine.ListAccounts(r.Context()); err == nil {
+	if eng := s.Engine(); eng != nil {
+		if engineAccounts, err := eng.ListAccounts(r.Context()); err == nil {
 			for _, ea := range engineAccounts {
 				sourceIDs[ea.Identifier] = ea.ID
 			}
@@ -932,7 +932,8 @@ func formatDeletedAt(deletedAt *time.Time) string {
 // handleAggregates returns aggregate data for a view type.
 // GET /api/v1/aggregates?view_type=senders&sort=count&direction=desc&limit=100
 func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
-	if s.engine == nil {
+	eng := s.Engine()
+	if eng == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
 		return
 	}
@@ -950,7 +951,7 @@ func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 
 	opts := parseAggregateOptions(r)
 
-	rows, err := s.engine.Aggregate(r.Context(), viewType, opts)
+	rows, err := eng.Aggregate(r.Context(), viewType, opts)
 	if err != nil {
 		s.logger.Error("aggregate query failed", "view_type", viewTypeStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Aggregate query failed")
@@ -971,7 +972,8 @@ func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 // handleSubAggregates returns sub-aggregate data after drill-down.
 // GET /api/v1/aggregates/sub?view_type=labels&sender=foo@example.com
 func (s *Server) handleSubAggregates(w http.ResponseWriter, r *http.Request) {
-	if s.engine == nil {
+	eng := s.Engine()
+	if eng == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
 		return
 	}
@@ -991,7 +993,7 @@ func (s *Server) handleSubAggregates(w http.ResponseWriter, r *http.Request) {
 	filter := parseMessageFilter(r)
 	opts := parseAggregateOptions(r)
 
-	rows, err := s.engine.SubAggregate(r.Context(), filter, viewType, opts)
+	rows, err := eng.SubAggregate(r.Context(), filter, viewType, opts)
 	if err != nil {
 		s.logger.Error("sub-aggregate query failed", "view_type", viewTypeStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Sub-aggregate query failed")
@@ -1012,7 +1014,8 @@ func (s *Server) handleSubAggregates(w http.ResponseWriter, r *http.Request) {
 // handleFilteredMessages returns a filtered list of messages.
 // GET /api/v1/messages/filter?sender=foo@example.com&offset=0&limit=500
 func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) {
-	if s.engine == nil {
+	eng := s.Engine()
+	if eng == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
 		return
 	}
@@ -1032,7 +1035,7 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 	requestLimit := filter.Pagination.Limit
 	filter.Pagination.Limit = requestLimit + 1
 
-	messages, err := s.engine.ListMessages(r.Context(), filter)
+	messages, err := eng.ListMessages(r.Context(), filter)
 	if err != nil {
 		s.logger.Error("filtered messages query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Message query failed")
@@ -1061,7 +1064,8 @@ func (s *Server) handleFilteredMessages(w http.ResponseWriter, r *http.Request) 
 // handleTotalStats returns detailed stats with optional filters.
 // GET /api/v1/stats/total?source_id=1&attachments_only=true
 func (s *Server) handleTotalStats(w http.ResponseWriter, r *http.Request) {
-	if s.engine == nil {
+	eng := s.Engine()
+	if eng == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
 		return
 	}
@@ -1088,7 +1092,7 @@ func (s *Server) handleTotalStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stats, err := s.engine.GetTotalStats(r.Context(), opts)
+	stats, err := eng.GetTotalStats(r.Context(), opts)
 	if err != nil {
 		s.logger.Error("total stats query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Stats query failed")
@@ -1101,7 +1105,8 @@ func (s *Server) handleTotalStats(w http.ResponseWriter, r *http.Request) {
 // handleFastSearch performs fast metadata search (subject, sender, recipient).
 // GET /api/v1/search/fast?q=invoice&offset=0&limit=100
 func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
-	if s.engine == nil {
+	eng := s.Engine()
+	if eng == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
 		return
 	}
@@ -1149,7 +1154,7 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 
 	q := search.Parse(queryStr)
 
-	result, err := s.engine.SearchFastWithStats(r.Context(), q, queryStr, filter, statsGroupBy, limit, offset)
+	result, err := eng.SearchFastWithStats(r.Context(), q, queryStr, filter, statsGroupBy, limit, offset)
 	if err != nil {
 		s.logger.Error("fast search failed", "query", queryStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
@@ -1172,7 +1177,8 @@ func (s *Server) handleFastSearch(w http.ResponseWriter, r *http.Request) {
 // handleDeepSearch performs full-text body search via FTS5.
 // GET /api/v1/search/deep?q=invoice&offset=0&limit=100&source_id=1&hide_deleted=true
 func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
-	if s.engine == nil {
+	eng := s.Engine()
+	if eng == nil {
 		writeError(w, http.StatusServiceUnavailable, "engine_unavailable", "Query engine not available")
 		return
 	}
@@ -1213,7 +1219,7 @@ func (s *Server) handleDeepSearch(w http.ResponseWriter, r *http.Request) {
 	merged := query.MergeFilterIntoQuery(q, filter)
 
 	// Fetch one extra row to determine has_more accurately.
-	messages, err := s.engine.Search(r.Context(), merged, limit+1, offset)
+	messages, err := eng.Search(r.Context(), merged, limit+1, offset)
 	if err != nil {
 		s.logger.Error("deep search failed", "query", queryStr, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Search failed")
