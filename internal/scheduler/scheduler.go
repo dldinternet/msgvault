@@ -13,8 +13,14 @@ import (
 )
 
 // SyncFunc is the callback invoked when a scheduled sync should run.
-// It receives the account email and should perform incremental sync + cache build.
+// It receives the account email and should perform incremental sync only
+// (cache rebuilding is handled by PostBatchFunc after all syncs complete).
 type SyncFunc func(ctx context.Context, email string) error
+
+// PostBatchFunc is called once after all concurrent syncs from a cron tick
+// have completed. Use this for operations like cache rebuilding that must
+// not run while syncs are writing to the database.
+type PostBatchFunc func()
 
 // AccountStatus represents the sync status of a scheduled account.
 type AccountStatus struct {
@@ -28,9 +34,10 @@ type AccountStatus struct {
 
 // Scheduler manages cron-based email sync scheduling.
 type Scheduler struct {
-	cron     *cron.Cron
-	syncFunc SyncFunc
-	logger   *slog.Logger
+	cron          *cron.Cron
+	syncFunc      SyncFunc
+	postBatchFunc PostBatchFunc // called after all syncs from a batch complete
+	logger        *slog.Logger
 
 	mu        sync.RWMutex
 	jobs      map[string]cron.EntryID // email -> cron entry ID
@@ -69,6 +76,13 @@ func New(syncFunc SyncFunc) *Scheduler {
 func (s *Scheduler) WithLogger(logger *slog.Logger) *Scheduler {
 	s.logger = logger
 	return s
+}
+
+// SetPostBatchFunc sets a callback that fires once after all concurrent syncs
+// from a cron tick have completed. This is the safe place for operations like
+// cache rebuilding that must not run while syncs are writing to the database.
+func (s *Scheduler) SetPostBatchFunc(fn PostBatchFunc) {
+	s.postBatchFunc = fn
 }
 
 // AddAccount schedules sync for an account using the given cron expression.
@@ -189,11 +203,6 @@ func (s *Scheduler) Stop() context.Context {
 // The caller must have already called wg.Add(1) and set running[email] = true.
 func (s *Scheduler) runSync(email string) {
 	defer s.wg.Done()
-	defer func() {
-		s.mu.Lock()
-		s.running[email] = false
-		s.mu.Unlock()
-	}()
 
 	s.logger.Info("starting scheduled sync", "email", email)
 	start := time.Now()
@@ -214,7 +223,27 @@ func (s *Scheduler) runSync(email string) {
 			"email", email,
 			"duration", time.Since(start))
 	}
+
+	// Mark this sync as finished and check if we're the last one
+	s.running[email] = false
+	lastSync := s.postBatchFunc != nil && !s.anyRunningLocked()
 	s.mu.Unlock()
+
+	if lastSync {
+		s.logger.Info("all syncs complete, running post-batch callback")
+		s.postBatchFunc()
+	}
+}
+
+// anyRunningLocked returns true if any account sync is currently running.
+// Caller must hold s.mu.
+func (s *Scheduler) anyRunningLocked() bool {
+	for _, r := range s.running {
+		if r {
+			return true
+		}
+	}
+	return false
 }
 
 // IsScheduled returns true if the account has been added to the scheduler.
