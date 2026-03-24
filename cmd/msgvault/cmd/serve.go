@@ -142,7 +142,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Go's database/sql connection pool. Running it while syncs write causes
 	// corruption. The PostBatchFunc fires only after every running sync has
 	// finished, making it safe to read the DB with DuckDB.
+	//
+	// retiredEngine holds the previously swapped-out engine. We delay closing
+	// it until the next swap so that in-flight HTTP requests using the old
+	// engine can finish. By the next PostBatchFunc call, all prior requests
+	// are guaranteed complete (syncs block between batches).
+	var retiredEngine query.Engine
 	sched.SetPostBatchFunc(func() {
+		// Close any engine retired during the previous swap.
+		if retiredEngine != nil {
+			retiredEngine.Close()
+			retiredEngine = nil
+		}
+
 		dbPath := cfg.DatabaseDSN()
 		analyticsDir := cfg.AnalyticsDir()
 		staleness := cacheNeedsBuild(dbPath, analyticsDir)
@@ -174,10 +186,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			logger.Error("failed to create new DuckDB engine after cache rebuild", "error", err)
 			return
 		}
-		old := apiServer.SwapEngine(newEngine)
-		if old != nil {
-			old.Close()
-		}
+		retiredEngine = apiServer.SwapEngine(newEngine)
 		logger.Info("query engine refreshed after cache rebuild")
 	})
 
@@ -259,9 +268,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		fmt.Println("Shutdown timed out after 30 seconds.")
 	}
 
-	// Close the current engine (may have been swapped during runtime).
+	// Close engines: the current one and any retired engine awaiting cleanup.
 	if finalEngine := apiServer.Engine(); finalEngine != nil {
 		finalEngine.Close()
+	}
+	if retiredEngine != nil {
+		retiredEngine.Close()
 	}
 
 	return nil

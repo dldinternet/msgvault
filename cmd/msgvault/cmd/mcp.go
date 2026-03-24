@@ -132,7 +132,11 @@ Add to Claude Desktop config:
 		if err != nil {
 			return err
 		}
-		defer func() { _ = result.Cleanup() }()
+		defer func() {
+			if err := result.Cleanup(); err != nil {
+				fmt.Fprintf(os.Stderr, "msgvault MCP cleanup error: %v\n", err)
+			}
+		}()
 
 		if result.IsRemote {
 			fmt.Fprintf(os.Stderr, "msgvault MCP: connected to remote server %s\n", cfg.Remote.URL)

@@ -501,16 +501,19 @@ func TestPostBatchFunc_CalledAfterAllSyncsComplete(t *testing.T) {
 		close(syncDone)
 	})
 
-	_ = sched.AddAccount("a@test.com", "0 0 1 1 *") // far-future schedule
-	_ = sched.AddAccount("b@test.com", "0 0 1 1 *")
-	_ = sched.AddAccount("c@test.com", "0 0 1 1 *")
+	for _, email := range []string{"a@test.com", "b@test.com", "c@test.com"} {
+		if err := sched.AddAccount(email, "0 0 1 1 *"); err != nil {
+			t.Fatalf("AddAccount(%s): %v", email, err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 
-	// Trigger all 3 concurrently
-	_ = sched.TriggerSync("a@test.com")
-	_ = sched.TriggerSync("b@test.com")
-	_ = sched.TriggerSync("c@test.com")
+	for _, email := range []string{"a@test.com", "b@test.com", "c@test.com"} {
+		if err := sched.TriggerSync(email); err != nil {
+			t.Fatalf("TriggerSync(%s): %v", email, err)
+		}
+	}
 
 	select {
 	case <-syncDone:
@@ -540,11 +543,15 @@ func TestPostBatchFunc_CalledEvenOnSyncErrors(t *testing.T) {
 		close(allDone)
 	})
 
-	_ = sched.AddAccount("a@test.com", "0 0 1 1 *")
+	if err := sched.AddAccount("a@test.com", "0 0 1 1 *"); err != nil {
+		t.Fatalf("AddAccount: %v", err)
+	}
 	sched.Start()
 	defer sched.Stop()
 
-	_ = sched.TriggerSync("a@test.com")
+	if err := sched.TriggerSync("a@test.com"); err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
 
 	select {
 	case <-allDone:
@@ -580,13 +587,19 @@ func TestPostBatchFunc_NoOverlapWithSync(t *testing.T) {
 		close(done)
 	})
 
-	_ = sched.AddAccount("a@test.com", "0 0 1 1 *")
-	_ = sched.AddAccount("b@test.com", "0 0 1 1 *")
+	for _, email := range []string{"a@test.com", "b@test.com"} {
+		if err := sched.AddAccount(email, "0 0 1 1 *"); err != nil {
+			t.Fatalf("AddAccount(%s): %v", email, err)
+		}
+	}
 	sched.Start()
 	defer sched.Stop()
 
-	_ = sched.TriggerSync("a@test.com")
-	_ = sched.TriggerSync("b@test.com")
+	for _, email := range []string{"a@test.com", "b@test.com"} {
+		if err := sched.TriggerSync(email); err != nil {
+			t.Fatalf("TriggerSync(%s): %v", email, err)
+		}
+	}
 
 	select {
 	case <-done:
