@@ -473,3 +473,128 @@ func TestValidateCronExpr(t *testing.T) {
 		})
 	}
 }
+
+// TestPostBatchFunc_CalledAfterAllSyncsComplete verifies that the post-batch
+// callback fires exactly once after all concurrent syncs from the same
+// trigger batch have completed — not during or per-account.
+func TestPostBatchFunc_CalledAfterAllSyncsComplete(t *testing.T) {
+	var syncStarted, syncFinished atomic.Int32
+	var postBatchCalled atomic.Int32
+	syncDone := make(chan struct{})
+
+	// Sync func that blocks until all 3 accounts have started
+	syncFunc := func(ctx context.Context, email string) error {
+		syncStarted.Add(1)
+		for syncStarted.Load() < 3 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		syncFinished.Add(1)
+		return nil
+	}
+
+	sched := New(syncFunc)
+	sched.SetPostBatchFunc(func() {
+		if syncFinished.Load() != 3 {
+			t.Errorf("PostBatchFunc called with only %d/3 syncs finished", syncFinished.Load())
+		}
+		postBatchCalled.Add(1)
+		close(syncDone)
+	})
+
+	sched.AddAccount("a@test.com", "0 0 1 1 *") // far-future schedule
+	sched.AddAccount("b@test.com", "0 0 1 1 *")
+	sched.AddAccount("c@test.com", "0 0 1 1 *")
+	sched.Start()
+	defer sched.Stop()
+
+	// Trigger all 3 concurrently
+	sched.TriggerSync("a@test.com")
+	sched.TriggerSync("b@test.com")
+	sched.TriggerSync("c@test.com")
+
+	select {
+	case <-syncDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for post-batch callback")
+	}
+
+	if got := postBatchCalled.Load(); got != 1 {
+		t.Errorf("PostBatchFunc called %d times, want 1", got)
+	}
+}
+
+// TestPostBatchFunc_CalledEvenOnSyncErrors verifies that the post-batch
+// callback fires even when syncs fail (cache may still need rebuild from
+// partially-successful syncs).
+func TestPostBatchFunc_CalledEvenOnSyncErrors(t *testing.T) {
+	var postBatchCalled atomic.Int32
+	allDone := make(chan struct{})
+
+	syncFunc := func(ctx context.Context, email string) error {
+		return errors.New("sync failed")
+	}
+
+	sched := New(syncFunc)
+	sched.SetPostBatchFunc(func() {
+		postBatchCalled.Add(1)
+		close(allDone)
+	})
+
+	sched.AddAccount("a@test.com", "0 0 1 1 *")
+	sched.Start()
+	defer sched.Stop()
+
+	sched.TriggerSync("a@test.com")
+
+	select {
+	case <-allDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for post-batch callback")
+	}
+
+	if got := postBatchCalled.Load(); got != 1 {
+		t.Errorf("PostBatchFunc called %d times, want 1", got)
+	}
+}
+
+// TestPostBatchFunc_NoOverlapWithSync verifies that PostBatchFunc does NOT
+// run while any sync goroutine is still running. This is the core safety
+// property — buildCache must not read the DB while syncs are writing.
+func TestPostBatchFunc_NoOverlapWithSync(t *testing.T) {
+	var syncsActive atomic.Int32
+	var overlapDetected atomic.Bool
+
+	syncFunc := func(ctx context.Context, email string) error {
+		syncsActive.Add(1)
+		defer syncsActive.Add(-1)
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+
+	done := make(chan struct{})
+	sched := New(syncFunc)
+	sched.SetPostBatchFunc(func() {
+		if syncsActive.Load() > 0 {
+			overlapDetected.Store(true)
+		}
+		close(done)
+	})
+
+	sched.AddAccount("a@test.com", "0 0 1 1 *")
+	sched.AddAccount("b@test.com", "0 0 1 1 *")
+	sched.Start()
+	defer sched.Stop()
+
+	sched.TriggerSync("a@test.com")
+	sched.TriggerSync("b@test.com")
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out")
+	}
+
+	if overlapDetected.Load() {
+		t.Fatal("PostBatchFunc ran while syncs were still active")
+	}
+}

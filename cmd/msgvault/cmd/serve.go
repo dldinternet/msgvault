@@ -125,6 +125,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Create and configure scheduler
 	sched := scheduler.New(syncFunc).WithLogger(logger)
 
+	// Rebuild cache after ALL syncs from a batch complete — never during.
+	// DuckDB's sqlite_scanner ATTACHes the SQLite file directly, bypassing
+	// Go's database/sql connection pool. Running it while syncs write causes
+	// corruption. The PostBatchFunc fires only after every running sync has
+	// finished, making it safe to read the DB with DuckDB.
+	sched.SetPostBatchFunc(func() {
+		dbPath := cfg.DatabaseDSN()
+		analyticsDir := cfg.AnalyticsDir()
+		if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.NeedsBuild {
+			logger.Info("rebuilding cache after sync batch",
+				"reason", staleness.Reason,
+				"full_rebuild", staleness.FullRebuild)
+			result, err := buildCache(dbPath, analyticsDir, staleness.FullRebuild)
+			if err != nil {
+				logger.Error("cache build failed", "error", err)
+			} else if !result.Skipped {
+				logger.Info("cache build completed", "exported", result.ExportedCount)
+			}
+		}
+	})
+
 	// Add all scheduled accounts
 	count, errs := sched.AddAccountsFromConfig(cfg)
 	if len(errs) > 0 {
@@ -316,25 +337,6 @@ func runScheduledSync(ctx context.Context, email string, s *store.Store, oauthMg
 		"messages_added", summary.MessagesAdded,
 		"duration", time.Since(startTime),
 	)
-
-	// Rebuild cache if stale (covers new messages and deletions).
-	dbPath := cfg.DatabaseDSN()
-	analyticsDir := cfg.AnalyticsDir()
-	if staleness := cacheNeedsBuild(dbPath, analyticsDir); staleness.NeedsBuild {
-		logger.Info("rebuilding cache after sync",
-			"email", email, "reason", staleness.Reason,
-			"full_rebuild", staleness.FullRebuild)
-		result, err := buildCache(
-			dbPath, analyticsDir, staleness.FullRebuild)
-		if err != nil {
-			logger.Error("cache build failed", "error", err)
-			// Don't fail the sync for cache build errors
-		} else if !result.Skipped {
-			logger.Info("cache build completed",
-				"exported", result.ExportedCount,
-			)
-		}
-	}
 
 	return nil
 }
