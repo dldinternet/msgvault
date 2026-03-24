@@ -132,7 +132,7 @@ Add to Claude Desktop config:
 		if err != nil {
 			return err
 		}
-		defer result.Cleanup()
+		defer func() { _ = result.Cleanup() }()
 
 		if result.IsRemote {
 			fmt.Fprintf(os.Stderr, "msgvault MCP: connected to remote server %s\n", cfg.Remote.URL)

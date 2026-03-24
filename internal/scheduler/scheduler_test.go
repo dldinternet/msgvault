@@ -501,16 +501,16 @@ func TestPostBatchFunc_CalledAfterAllSyncsComplete(t *testing.T) {
 		close(syncDone)
 	})
 
-	sched.AddAccount("a@test.com", "0 0 1 1 *") // far-future schedule
-	sched.AddAccount("b@test.com", "0 0 1 1 *")
-	sched.AddAccount("c@test.com", "0 0 1 1 *")
+	_ = sched.AddAccount("a@test.com", "0 0 1 1 *") // far-future schedule
+	_ = sched.AddAccount("b@test.com", "0 0 1 1 *")
+	_ = sched.AddAccount("c@test.com", "0 0 1 1 *")
 	sched.Start()
 	defer sched.Stop()
 
 	// Trigger all 3 concurrently
-	sched.TriggerSync("a@test.com")
-	sched.TriggerSync("b@test.com")
-	sched.TriggerSync("c@test.com")
+	_ = sched.TriggerSync("a@test.com")
+	_ = sched.TriggerSync("b@test.com")
+	_ = sched.TriggerSync("c@test.com")
 
 	select {
 	case <-syncDone:
@@ -540,11 +540,11 @@ func TestPostBatchFunc_CalledEvenOnSyncErrors(t *testing.T) {
 		close(allDone)
 	})
 
-	sched.AddAccount("a@test.com", "0 0 1 1 *")
+	_ = sched.AddAccount("a@test.com", "0 0 1 1 *")
 	sched.Start()
 	defer sched.Stop()
 
-	sched.TriggerSync("a@test.com")
+	_ = sched.TriggerSync("a@test.com")
 
 	select {
 	case <-allDone:
@@ -580,13 +580,13 @@ func TestPostBatchFunc_NoOverlapWithSync(t *testing.T) {
 		close(done)
 	})
 
-	sched.AddAccount("a@test.com", "0 0 1 1 *")
-	sched.AddAccount("b@test.com", "0 0 1 1 *")
+	_ = sched.AddAccount("a@test.com", "0 0 1 1 *")
+	_ = sched.AddAccount("b@test.com", "0 0 1 1 *")
 	sched.Start()
 	defer sched.Stop()
 
-	sched.TriggerSync("a@test.com")
-	sched.TriggerSync("b@test.com")
+	_ = sched.TriggerSync("a@test.com")
+	_ = sched.TriggerSync("b@test.com")
 
 	select {
 	case <-done:
