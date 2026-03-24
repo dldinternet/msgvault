@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/wesm/msgvault/internal/config"
+	"github.com/wesm/msgvault/internal/query"
+	"github.com/wesm/msgvault/internal/search"
 )
 
 // testLogger returns a logger for tests that discards output
@@ -420,4 +423,84 @@ func TestCORSDisabledByDefault(t *testing.T) {
 	if w.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Errorf("expected no CORS header when no origins configured, got %q", w.Header().Get("Access-Control-Allow-Origin"))
 	}
+}
+
+func TestSwapEngine(t *testing.T) {
+	srv := NewServerWithOptions(ServerOptions{
+		Config:    &config.Config{},
+		Store:     &mockStore{},
+		Scheduler: newMockScheduler(),
+		Logger:    testLogger(),
+		Engine:    nil,
+	})
+
+	if srv.Engine() != nil {
+		t.Fatal("expected nil engine initially")
+	}
+
+	eng1 := &mockEngine{name: "engine1"}
+	old := srv.SwapEngine(eng1)
+	if old != nil {
+		t.Fatal("expected nil old engine on first swap")
+	}
+	if srv.Engine() != eng1 {
+		t.Fatal("expected engine1 after swap")
+	}
+
+	eng2 := &mockEngine{name: "engine2"}
+	old = srv.SwapEngine(eng2)
+	if old != eng1 {
+		t.Fatal("expected engine1 as old engine")
+	}
+	if srv.Engine() != eng2 {
+		t.Fatal("expected engine2 after second swap")
+	}
+}
+
+type mockEngine struct {
+	name string
+}
+
+func (m *mockEngine) Close() error { return nil }
+
+// Remaining interface methods - all unused in this test but required by query.Engine.
+// Implemented as panics to catch accidental calls.
+func (m *mockEngine) Aggregate(_ context.Context, _ query.ViewType, _ query.AggregateOptions) ([]query.AggregateRow, error) {
+	panic("unused")
+}
+func (m *mockEngine) SubAggregate(_ context.Context, _ query.MessageFilter, _ query.ViewType, _ query.AggregateOptions) ([]query.AggregateRow, error) {
+	panic("unused")
+}
+func (m *mockEngine) ListMessages(_ context.Context, _ query.MessageFilter) ([]query.MessageSummary, error) {
+	panic("unused")
+}
+func (m *mockEngine) GetMessage(_ context.Context, _ int64) (*query.MessageDetail, error) {
+	panic("unused")
+}
+func (m *mockEngine) GetMessageBySourceID(_ context.Context, _ string) (*query.MessageDetail, error) {
+	panic("unused")
+}
+func (m *mockEngine) GetAttachment(_ context.Context, _ int64) (*query.AttachmentInfo, error) {
+	panic("unused")
+}
+func (m *mockEngine) Search(_ context.Context, _ *search.Query, _, _ int) ([]query.MessageSummary, error) {
+	panic("unused")
+}
+func (m *mockEngine) SearchFast(_ context.Context, _ *search.Query, _ query.MessageFilter, _, _ int) ([]query.MessageSummary, error) {
+	panic("unused")
+}
+func (m *mockEngine) SearchFastCount(_ context.Context, _ *search.Query, _ query.MessageFilter) (int64, error) {
+	panic("unused")
+}
+func (m *mockEngine) SearchFastWithStats(_ context.Context, _ *search.Query, _ string, _ query.MessageFilter, _ query.ViewType, _, _ int) (*query.SearchFastResult, error) {
+	panic("unused")
+}
+func (m *mockEngine) GetGmailIDsByFilter(_ context.Context, _ query.MessageFilter) ([]string, error) {
+	panic("unused")
+}
+func (m *mockEngine) ListAccounts(_ context.Context) ([]query.AccountInfo, error) {
+	panic("unused")
+}
+func (m *mockEngine) GetTotalStats(_ context.Context, _ query.StatsOptions) (*query.TotalStats, error) {
+	panic("unused")
 }

@@ -125,6 +125,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Create and configure scheduler
 	sched := scheduler.New(syncFunc).WithLogger(logger)
 
+	// apiServer is set after creation (below) so the PostBatchFunc closure
+	// can call SwapEngine to refresh the DuckDB engine after cache rebuilds.
+	var apiServer *api.Server
+
 	// Rebuild cache after ALL syncs from a batch complete — never during.
 	// DuckDB's sqlite_scanner ATTACHes the SQLite file directly, bypassing
 	// Go's database/sql connection pool. Running it while syncs write causes
@@ -143,6 +147,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 			} else if !result.Skipped {
 				logger.Info("cache build completed", "exported", result.ExportedCount)
 			}
+		}
+
+		// Refresh the API server's query engine so it picks up the new
+		// Parquet files. Without this, the DuckDB engine serves stale data
+		// until the daemon is restarted.
+		if apiServer != nil && query.HasCompleteParquetData(cfg.AnalyticsDir()) {
+			newEngine, err := query.NewDuckDBEngine(
+				cfg.AnalyticsDir(), cfg.DatabaseDSN(), s.DB(),
+			)
+			if err != nil {
+				logger.Error("failed to create new DuckDB engine after cache rebuild", "error", err)
+				return
+			}
+			old := apiServer.SwapEngine(newEngine)
+			if old != nil {
+				old.Close()
+			}
+			logger.Info("query engine refreshed after cache rebuild")
 		}
 	})
 
@@ -172,7 +194,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	schedAdapter := &schedulerAdapter{scheduler: sched}
 
 	// Create and start API server
-	apiServer := api.NewServerWithOptions(api.ServerOptions{
+	apiServer = api.NewServerWithOptions(api.ServerOptions{
 		Config:    cfg,
 		Store:     storeAdapter,
 		Engine:    engine,

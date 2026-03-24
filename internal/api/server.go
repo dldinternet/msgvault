@@ -47,6 +47,7 @@ type Server struct {
 	cfg         *config.Config
 	store       MessageStore
 	engine      query.Engine // Query engine for aggregates and TUI support
+	engineMu    sync.RWMutex // protects engine swaps
 	scheduler   SyncScheduler
 	logger      *slog.Logger
 	router      chi.Router
@@ -85,6 +86,24 @@ func NewServerWithOptions(opts ServerOptions) *Server {
 	}
 	s.router = s.setupRouter()
 	return s
+}
+
+// Engine returns the current query engine. Thread-safe.
+func (s *Server) Engine() query.Engine {
+	s.engineMu.RLock()
+	defer s.engineMu.RUnlock()
+	return s.engine
+}
+
+// SwapEngine atomically replaces the query engine and returns the old one.
+// The caller is responsible for closing the old engine after the swap.
+// This is used after cache rebuilds to pick up fresh Parquet files.
+func (s *Server) SwapEngine(newEngine query.Engine) query.Engine {
+	s.engineMu.Lock()
+	defer s.engineMu.Unlock()
+	old := s.engine
+	s.engine = newEngine
+	return old
 }
 
 // setupRouter configures the chi router with all routes and middleware.
